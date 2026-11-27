@@ -162,6 +162,11 @@ public final class RoomDirectory {
         return r.view();
     }
 
+    public synchronized RoomView byNetwork(UUID network) {
+        for (Room r : rooms.values()) if (r.networkId.equals(network)) return r.view();
+        return null;
+    }
+
     public synchronized RoomView activeRoom(UUID actor) {
         Objects.requireNonNull(actor, "actor");
         UUID id = active.get(actor);

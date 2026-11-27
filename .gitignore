@@ -5,3 +5,6 @@ apps/desktop/src-tauri/target/
 *.log
 .env
 .env.local
+
+agent/bin/
+apps/desktop/src-tauri/binaries/

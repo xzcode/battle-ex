@@ -2,6 +2,7 @@
 import {computed,onBeforeUnmount,ref,watch} from 'vue'
 import {ApiError,lobbySocket,request,serverOrigin,type Lobby,type Login,type Room,type Visibility} from './api'
 import {messages,type Language,type Message} from './i18n'
+import {nativeAvailable,startNetwork,stopNetwork,networkStatus,type NetworkInfo,type NetworkStatus} from './native'
 
 const language=ref<Language>(localStorage.getItem('battle.lang')==='zh'?'zh':'en')
 const t=(key:Message)=>messages[language.value][key]
@@ -23,6 +24,63 @@ let ws:WebSocket|null=null, timer:ReturnType<typeof setTimeout>|null=null
 const room=computed(()=>lobby.value?.activeRoom||null)
 const me=computed(()=>lobby.value?.user.id||'')
 const host=computed(()=>!!room.value&&room.value.host===me.value)
+const netInfo=ref<NetworkInfo|null>(null),netStatus=ref<NetworkStatus>({state:'idle',peers:[]})
+const netError=ref(''),netBusy=ref(false),netPaused=ref(false)
+const pin=computed(()=>netInfo.value&&origin.value?localStorage.getItem('battle.issuer.'+origin.value)||'':'')
+const pinMismatch=computed(()=>!!pin.value&&!!netInfo.value&&pin.value!==netInfo.value.issuer)
+const netTrusted=computed(()=>!!netInfo.value?.issuer&&pin.value===netInfo.value.issuer)
+let netGen=0,netQueue:Promise<void>=Promise.resolve()
+let netPoll:ReturnType<typeof setInterval>|null=null
+const netStateLabel=computed(()=>{
+ const map:Record<string,string>={idle:language.value==='zh'?'未连接':'Disconnected',starting:language.value==='zh'?'启动中':'Starting',enrolling:language.value==='zh'?'认证设备':'Enrolling',connecting:language.value==='zh'?'连接中':'Connecting',running:language.value==='zh'?'网卡运行中':'Adapter running',waiting:language.value==='zh'?'等待房间':'Waiting',revoked:language.value==='zh'?'权限已撤销':'Revoked',expired:language.value==='zh'?'授权已过期':'Expired',retrying:language.value==='zh'?'重新连接':'Retrying',error:language.value==='zh'?'连接失败':'Error'}
+ return map[netStatus.value.state]||netStatus.value.state
+})
+function networkReconcile(){
+ const gen=++netGen,currentToken=token.value,currentRoom=room.value?.id,currentOrigin=origin.value,userId=me.value
+ netBusy.value=!!currentRoom&&nativeAvailable
+ netError.value='';netInfo.value=null;netStatus.value={state:'idle',peers:[]}
+ if(!nativeAvailable){netBusy.value=false;return}
+ netQueue=netQueue.catch(()=>{}).then(async()=>{
+  try{
+   await stopNetwork()
+   if(gen!==netGen||!currentToken||!currentRoom)return
+   const info=await request<NetworkInfo>(currentOrigin,'/network/info',currentToken)
+   if(gen!==netGen)return
+   netInfo.value=info
+   if(!info.enabled||!netTrusted.value||netPaused.value)return
+   await startNetwork(currentOrigin,currentToken,info.issuer,userId)
+   if(gen!==netGen){await stopNetwork();return}
+   netStatus.value={state:'starting',peers:[]}
+  }catch(e){if(gen===netGen)netError.value=e instanceof Error?e.message:String(e)}
+  finally{if(gen===netGen)netBusy.value=false}
+ })
+}
+function trustNetwork(){
+ if(!netInfo.value?.enabled||!netInfo.value.issuer||!origin.value)return
+ localStorage.setItem('battle.issuer.'+origin.value,netInfo.value.issuer)
+ netPaused.value=false
+ networkReconcile()
+}
+function toggleNetwork(){
+ netPaused.value=!netPaused.value
+ networkReconcile()
+}
+function retryNetwork(){netPaused.value=false;networkReconcile()}
+function peerMode(mode:string,relayConnected:boolean){
+ if(mode==='ice-selected')return 'P2P'
+ if((mode==='relay-configured'||mode==='relay-fallback')&&relayConnected)return language.value==='zh'?'中继':'Relay'
+ if(mode==='direct-configured')return language.value==='zh'?'直连':'Direct'
+ return language.value==='zh'?'连接中':'Connecting'
+}
+watch(()=>[token.value,room.value?.id,origin.value],()=>{netPaused.value=false;networkReconcile()})
+if(nativeAvailable)netPoll=setInterval(async()=>{
+ if(!token.value||!room.value||!netTrusted.value||netPaused.value||netBusy.value)return
+ const gen=netGen
+ try{
+  const status=await networkStatus()
+  if(gen===netGen&&(!status.roomId||status.roomId===room.value?.id))netStatus.value=status
+ }catch(e){if(gen===netGen)netError.value=e instanceof Error?e.message:String(e)}
+},1000)
 const myReady=computed(()=>room.value?.members.find(x=>x.userId===me.value)?.ready||false)
 const canStart=computed(()=>!!room.value&&room.value.members.length>=2&&room.value.members.every(x=>x.ready))
 const filtered=computed(()=> (lobby.value?.rooms||[]).filter(x=>
@@ -82,7 +140,7 @@ async function joinRoom(id:string,invite?:string){await perform(async()=>{await 
 async function action(name:string,body?:unknown){if(!room.value)return;const id=room.value.id;await perform(async()=>{await api('/rooms/'+id+'/'+name,'POST',body);await refresh()})}
 async function reveal(rotate=false){if(!room.value)return;await perform(async()=>{const v=await api<{invite:string}>('/rooms/'+room.value!.id+'/invitation',rotate?'POST':'GET');invitation.value=v.invite;copied.value=false})}
 async function copyInvite(){if(!room.value||!invitation.value)return;try{await navigator.clipboard.writeText(room.value.id+'\n'+invitation.value);copied.value=true}catch(e){showError(e)}}
-onBeforeUnmount(()=>reset())
+onBeforeUnmount(()=>{if(netPoll)clearInterval(netPoll);reset();networkReconcile()})
 </script>
 
 <template>
@@ -141,7 +199,31 @@ onBeforeUnmount(()=>reset())
       <div v-if="host&&room.visibility==='PRIVATE'" class="invitation"><div class="label-row">{{t('invite')}}<button v-if="!invitation" class="link" @click="reveal()">{{t('reveal')}}</button><button v-else class="link" @click="reveal(true)">{{t('rotate')}}</button></div><template v-if="invitation"><label>{{t('roomId')}}<input :value="room.id" readonly></label><label>{{t('inviteCode')}}<input :value="invitation" readonly></label><button class="secondary full" @click="copyInvite">{{copied?t('copied'):t('copy')}}</button></template></div>
       <button class="secondary full danger" :disabled="busy" @click="action('leave')">{{t('leave')}}</button></div>
      </template>
-     <div class="network-notice"><span>◇</span>{{t('networkPending')}}</div>
+     <section v-if="room" class="network-section">
+      <div class="network-header"><strong>{{language==='zh'?'房间网络':'Room network'}}</strong><span class="state" :class="netStatus.state==='running'?'waiting':'idle'">{{netStateLabel}}</span></div>
+      <div v-if="!nativeAvailable" class="network-help">{{language==='zh'?'需要桌面客户端才能建立虚拟网络。':'The desktop application is required for virtual networking.'}}</div>
+      <template v-else>
+       <p v-if="netBusy" class="network-help">{{language==='zh'?'正在配置网络…':'Configuring network…'}}</p>
+       <p v-else-if="netInfo&&!netInfo.enabled" class="network-help">{{language==='zh'?'服务器尚未启用房间网络。':'Room networking is not configured on this server.'}}</p>
+       <div v-if="netInfo?.enabled&&!netTrusted" class="trust-box">
+        <p>{{pinMismatch?(language==='zh'?'服务器签名公钥已改变，请向管理员核实后再替换。':'The issuer has changed. Verify the new key with your administrator before replacing it.'):(language==='zh'?'首次连接，请核实并信任服务器签名公钥。':'Verify and trust the server signing key on first use.')}}</p>
+        <code>{{netInfo.issuer}}</code><button class="secondary full" :disabled="netBusy" @click="trustNetwork">{{pinMismatch?(language==='zh'?'确认替换信任':'Replace trusted key'):(language==='zh'?'信任并连接':'Trust and connect')}}</button>
+       </div>
+       <template v-if="netInfo?.enabled&&netTrusted">
+        <div v-if="netStatus.ip" class="network-ip"><span>{{language==='zh'?'本机虚拟 IP':'Local virtual IP'}}</span><code>{{netStatus.ip}}</code></div>
+        <div v-for="peer in netStatus.peers||[]" :key="peer.userId" class="network-peer">
+         <div><strong>{{lobby.memberNames[peer.userId]||peer.ip}}</strong><small>{{peer.ip}}</small></div>
+         <div class="network-metrics"><span>{{peerMode(peer.mode,peer.relayConnected)}}</span><strong>{{peer.rttMillis===null?'—':peer.rttMillis.toFixed(1)+' ms'}}</strong></div>
+        </div>
+        <p v-if="netStatus.state==='running'&&!(netStatus.peers||[]).length" class="network-help">{{language==='zh'?'等待其他玩家连接网络。':'Waiting for other players to connect.'}}</p>
+        <p v-if="netStatus.error" class="network-error">{{netStatus.error}}</p>
+        <div class="network-controls"><button class="secondary" :disabled="netBusy" @click="toggleNetwork">{{netPaused?(language==='zh'?'连接网络':'Connect network'):(language==='zh'?'断开网络':'Disconnect network')}}</button><button v-if="['error','revoked','expired'].includes(netStatus.state)" class="secondary" :disabled="netBusy" @click="retryNetwork">{{language==='zh'?'重试':'Retry'}}</button></div>
+       </template>
+       <p v-if="netError" class="network-error">{{netError}}</p>
+       <button v-if="netError&&!netInfo" class="secondary full" :disabled="netBusy" @click="retryNetwork">{{language==='zh'?'重试':'Retry'}}</button>
+      </template>
+      <p class="network-help">{{language==='zh'?'延迟来自实际 UDP 回显；不代表游戏兼容性。':'Latency is measured using UDP echo; game compatibility is not implied.'}}</p>
+     </section>
     </aside>
    </div>
   </main>

@@ -2,9 +2,15 @@
 
 A self-hostable PC game LAN multiplayer and competitive platform. Shared networking engine: [Network Core EX](https://github.com/xzcode/network-core-ex).
 
-**Status: M1 account/lobby application baseline; no playable release yet.**
+**Status: M2 authenticated room-network development baseline; no playable release yet.**
 
-Spring Boot 3.5.16 / Java 21 API and WebSocket service, configurable MongoDB account persistence, and Vue 3 / TypeScript desktop frontend are implemented. Tauri 2 wrapper is source-only pending native build. Real HTTP/WebSocket, disposable MongoDB restart and two-browser UI integration tests passed; see [M1 implementation and run instructions](docs/M1_IMPLEMENTATION.md). Network Core EX integration and actual game compatibility are not implemented.
+Spring Boot / Java 21 accounts and lobby, optional MongoDB account persistence,
+Vue 3 desktop UI and a Go agent/relay integrating the pinned Network Core EX
+candidate. Linux isolated real-room direct/relay, isolation and revocation
+tests pass. See [M2 implementation and deployment configuration](docs/M2_IMPLEMENTATION.md)
+and [M1 implementation](docs/M1_IMPLEMENTATION.md). Windows native adapter,
+Tauri installation, actual games and complex NAT reliability remain acceptance
+gates.
 
 
 ## Product scope

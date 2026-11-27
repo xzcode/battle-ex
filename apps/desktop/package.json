@@ -13,10 +13,12 @@
     "tauri": "tauri",
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build",
-    "test:e2e": "node scripts/test-desktop.mjs"
+    "test:e2e": "node scripts/test-desktop.mjs",
+    "build:agent": "node scripts/build-agent.mjs"
   },
   "dependencies": {
-    "vue": "3.5.45"
+    "vue": "3.5.45",
+    "@tauri-apps/api": "2.12.5"
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.12.6",

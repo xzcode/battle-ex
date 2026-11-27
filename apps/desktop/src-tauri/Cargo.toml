@@ -8,6 +8,8 @@ description = "Battle EX LAN game platform"
 tauri-build = { version = "=2.7.6", features = [] }
 [dependencies]
 tauri = { version = "=2.12.7", features = [] }
+serde_json = "=1.0.154"
+sha2 = "=0.10.9"
 [profile.release]
 strip = true
 lto = true

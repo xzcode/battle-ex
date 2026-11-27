@@ -64,7 +64,11 @@ public final class Platform {
         User user = new User(account.id(), account.username());
         Session session = new Session(user, clock.instant().plus(lifetime), digest(token));
         Session prior = byUser.put(user.id(), session);
-        if (prior != null) sessions.remove(prior.digest());
+        if (prior != null) {
+            sessions.remove(prior.digest());
+            var priorRoom = rooms.activeRoom(user.id());
+            if (priorRoom != null) rooms.leave(user.id(), priorRoom.id());
+        }
         sessions.put(session.digest(), session);
         revision++;
         return new Login(token, session.expiresAt(), user);
@@ -74,6 +78,19 @@ public final class Platform {
         remove(s);
     }
     public synchronized User authenticate(String token) { return require(token).user(); }
+
+    public record NetworkContext(User user, String sessionDigest, RoomDirectory.RoomView room) {}
+    public synchronized NetworkContext networkContext(String token) {
+        var s = require(token);
+        return new NetworkContext(s.user(), s.digest(), rooms.activeRoom(s.user().id()));
+    }
+    public synchronized boolean isSessionCurrent(UUID user, String digest) {
+        var s = byUser.get(user);
+        return s != null && s.digest().equals(digest) && s.expiresAt().isAfter(clock.instant());
+    }
+    public synchronized RoomDirectory.RoomView roomByNetwork(UUID network) {
+        return rooms.byNetwork(network);
+    }
 
     public synchronized Lobby lobby(String token) {
         var s = require(token);
@@ -87,6 +104,7 @@ public final class Platform {
     }
     public synchronized RoomDirectory.RoomView create(String token, String name, String gameId,
                 int capacity, RoomDirectory.Visibility visibility) {
+        if (capacity > 65) throw new IllegalArgumentException("current network engine supports at most 65 players per room");
         if (name == null || name.length() > 128 || gameId == null || gameId.length() > 128)
             throw new IllegalArgumentException("invalid room name or game ID");
         var result = rooms.create(require(token).user().id(), name, gameId, capacity, visibility);

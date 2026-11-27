@@ -11,7 +11,7 @@ Battle EX owns identity, lobby, rooms, game adapters, chat and trusted result po
 - Empty room is deleted. Private invitation rotates on owner transfer or explicit rotation.
 - Every room has a random room ID and independent random network ID. Room metadata revision and membership revision are monotonically increasing for each room. Snapshots are immutable.
 
-## Network adapter (next milestone; not implemented)
+## Network adapter (M2 design and development implementation)
 
 After authenticated room admission, the Battle control plane maps members to enrolled device identity and WireGuard public keys, allocates unique per-room IPv4 overlay addresses, and compiles an authoritative snapshot keyed by the room's network ID and membership revision. A Go sidecar consumes that snapshot via authenticated IPC and uses Network Core EX's engine API. Product-issued relay leases bind node, network, flow, peer identities and expiry. Separate issuers for Battle EX and Network EX. Never accept peer lists, relay issuer keys, room IDs or identity as proof merely because the client supplied them.
 
@@ -23,6 +23,10 @@ A future catalog entry identifies exact legal user-installed game editions, comp
 
 ## Implementation status
 
-M1 application baseline: Java 21 room domain plus Spring Boot REST and authenticated WebSocket snapshots, single-instance sessions, optional MongoDB account persistence, Vue desktop frontend and Tauri wrapper source. See [M1 implementation](M1_IMPLEMENTATION.md).
-
-The actor argument in RoomDirectory remains trusted internal data; only authenticated Platform methods expose room actions. Room IDs and membership revisions are control-plane authority, not actual packet isolation. Room-to-network snapshot compilation, device enrollment, relay lease issuance, native adapter lifecycle and packet revocation tests remain M2. No trusted match results. Native desktop installation and production multi-instance/authentication controls remain pending.
+M1 authenticated application baseline and M2 room-network authority, signed
+snapshots, device enrollment, room IP allocation, live relay authorization and
+Go sidecar integration are implemented. See [M2 implementation](M2_IMPLEMENTATION.md)
+for exact timing, limits, configuration, evidence, and remaining gates. Real
+Linux room network tests pass; no game or Windows native claim. The current
+engine recreates tunnels on membership/lease changes; seamless refresh and
+native privilege service remain pending. M1 documentation is historical.
