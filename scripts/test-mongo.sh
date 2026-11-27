@@ -16,7 +16,10 @@ test "$ready" = 1
 port="$(docker port "$name" 27017/tcp | awk -F: '{print $NF;exit}')"
 export BATTLE_MONGO_URI="mongodb://battle_test:$password@127.0.0.1:$port/?authSource=admin&serverSelectionTimeoutMS=5000"
 export BATTLE_MONGO_DB=battle_ex_isolated_test BATTLE_TEST_PERSISTENCE=true
-if [[ "${1:-}" == "--archive-moderation" ]]; then
+if [[ "${1:-}" == "--community-operations" ]]; then
+  export BATTLE_COMMUNITY_CLUSTER_TEST=true BATTLE_STATE_MODE=mongo
+  node scripts/test-community-operations.mjs
+elif [[ "${1:-}" == "--archive-moderation" ]]; then
   export BATTLE_CLUSTER_TEST=true BATTLE_STATE_MODE=mongo
   node scripts/test-archive-moderation.mjs
 elif [[ "${1:-}" == "--competition" ]]; then

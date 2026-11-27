@@ -1,5 +1,7 @@
 # M6–M7 match archive, replay library and manual moderation
 
+Historical baseline: [M8–M9 operations](M8_M9_COMMUNITY_OPERATIONS.md) adds configured root UUIDs and per-account operator roles. When roots are configured, moderation requires MODERATOR or root in addition to the independent credential.
+
 Development baseline, 2026-11-27. This slice builds on the M5 assigned 1v1
 match ledger. It does not certify gameplay compatibility or an anti-cheat
 engine.

@@ -263,6 +263,7 @@ public final class RoomDirectory {
         return r.invite;
     }
 
+    public synchronized int count(){return rooms.size();}
     public synchronized List<RoomSummary> listPublic() {
         return rooms.values().stream().filter(r -> r.visibility == Visibility.PUBLIC)
                 .map(r -> new RoomSummary(r.id, r.name, r.gameId, r.capacity,

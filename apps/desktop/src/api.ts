@@ -5,7 +5,7 @@ export type GameBuild={gameId:string;sha256:string;fileVersion:string|null;archi
 export type Member={userId:string;ready:boolean;gameBuild?:GameBuild|null}
 export type RoomSummary={id:string;name:string;gameId:string;capacity:number;occupancy:number;state:RoomState}
 export type Room={id:string;networkId:string;name:string;gameId:string;capacity:number;visibility:Visibility;host:string;state:RoomState;revision:number;membershipRevision:number;members:Member[]}
-export type Lobby={user:User;revision:number;signedInUsers:number;rooms:RoomSummary[];activeRoom:Room|null;memberNames:Record<string,string>;competition?:CompetitionView;moderationConfigured?:boolean}
+export type Lobby={user:User;revision:number;signedInUsers:number;rooms:RoomSummary[];activeRoom:Room|null;memberNames:Record<string,string>;competition?:CompetitionView;moderationConfigured?:boolean;operationsConfigured?:boolean}
 export type Login={token:string;expiresAt:string;user:User}
 export class ApiError extends Error {constructor(public status:number,message:string){super(message)}}
 export function serverOrigin(raw:string):string{
@@ -38,7 +38,7 @@ export function lobbySocket(origin:string,token:string,receive:(lobby:Lobby)=>vo
 }
 
 
-export type MatchMode='CASUAL'|'RANKED'
+export type MatchMode='CASUAL'|'RANKED'|'TOURNAMENT'
 export type MatchRecord={id:string;roomId:string;gameId:string;mode:MatchMode;players:User[];state:string;createdAt:number;startedAt:number|null;endedAt:number|null;resultDeadline:number|null;outcome:'WIN'|'DRAW'|null;winnerId:string|null;ratingChanges:{userId:string;before:number;after:number}[]}
 export type CompetitionView={ticket:{user:User;gameId:string;mode:MatchMode;queuedAt:number}|null;match:MatchRecord|null;awaitingResult:MatchRecord|null;rankedGames:string[]}
 export type Leaderboard={gameId:string;offset:number;total:number;entries:{rank:number;rating:{gameId:string;user:User;points:number;played:number;wins:number;draws:number;losses:number}}[]}
@@ -52,3 +52,17 @@ export type Page<T>={offset:number;total:number;entries:T[]}
 export type ModerationReport={id:string;matchId:string;reporter:User;target:User;reason:string;details:string;replaySha256:string|null;createdAt:number;status:string;reviewer:User|null;reviewedAt:number|null;resolution:string|null;suspensionId:string|null}
 export type Suspension={id:string;target:User;reviewer:User;reportId:string;reason:string;createdAt:number;until:number|null;revokedAt:number|null;revokedBy:User|null;revokeReason:string|null}
 export type WarningRecord={id:string;matchId:string;message:string;at:number}
+
+export type TeamRole='OWNER'|'OFFICER'|'MEMBER'
+export type Team={id:string;name:string;tag:string;description:string;createdAt:number;members:{user:User;role:TeamRole;joinedAt:number}[]}
+export type TeamDetail={team:Team;applications:{teamId:string;user:User;at:number;message:string}[];myApplication:boolean}
+export type BracketSlot={id:number;round:number;first:string|null;second:string|null;state:'BLOCKED'|'READY'|'ASSIGNED'|'BYE'|'DECIDED';checkedIn:string[];matchId:string|null;attempts:string[];winner:string|null;ruling:{winner:string;source:'PLAYED'|'FORFEIT';operator:User;reason:string;at:number}|null}
+export type Tournament={id:string;name:string;gameId:string;description:string;capacity:number;organizer:User;createdAt:number;state:'REGISTRATION'|'RUNNING'|'FINISHED'|'CANCELLED';entrants:{user:User;joinedAt:number}[];slots:BracketSlot[];champion:string|null;cancellationReason:string|null}
+export type OperatorRole='MODERATOR'|'EVENT_MANAGER'|'ANALYST'
+export type OperatorAccess={root:boolean;roles:OperatorRole[];legacyModeration:boolean}
+export type RoleGrant={user:User;role:OperatorRole;grantedBy:User;at:number}
+export type OperationEvent={id:string;actor:User;action:string;subject:string;reason:string|null;at:number}
+export type OperationOverview={signedIn:number;rooms:number;runningMatches:number;queued:number;teams:number;tournaments:number;pendingReports:number;activeSuspensions:number;persistent:boolean}
+
+export type OperatorSession={user:User;expiresAt:number;roomId:string|null;queued:boolean}
+export type OperatorRoom={id:string;name:string;gameId:string;visibility:string;state:string;host:string;members:number;capacity:number}

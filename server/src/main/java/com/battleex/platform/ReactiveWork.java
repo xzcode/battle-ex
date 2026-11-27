@@ -21,6 +21,8 @@ public final class ReactiveWork implements DisposableBean {
     private final Scheduler password = Schedulers.newBoundedElastic(
             Math.max(2, Math.min(8, Runtime.getRuntime().availableProcessors())), 256, "battle-password");
 
+    public boolean persistent(){return cluster.enabled();}
+
     public <T> Mono<T> state(Callable<T> task) {
         return cluster.execute(task,state);
     }

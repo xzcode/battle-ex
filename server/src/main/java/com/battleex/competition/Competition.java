@@ -13,7 +13,7 @@ public final class Competition {
     public static final Set<String> GAMES=Set.of("warcraft3","redalert2","cs16","custom");
     public static final long INITIAL_RATING=1500;
     private static final long RESULT_WAIT_SECONDS=600;
-    public enum Mode { CASUAL, RANKED }
+    public enum Mode { CASUAL, RANKED, TOURNAMENT }
     public enum State { WAITING, RUNNING, AWAITING_RESULT, FINISHED, CANCELLED, ABANDONED, NO_RESULT, RATED }
     public enum Outcome { WIN, DRAW }
     public record Ticket(User user,String gameId,Mode mode,long queuedAt) {}
@@ -57,7 +57,7 @@ public final class Competition {
     public View view(UUID user){return new View(tickets.get(user),active(user),awaiting(user),authority.games());}
     public void enqueue(User user,String gameId,Mode mode,long now){
         game(gameId);
-        if(mode==null)throw new IllegalArgumentException("matchmaking mode required");
+        if(mode==null||mode==Mode.TOURNAMENT)throw new IllegalArgumentException("invalid matchmaking mode");
         if(active(user.id())!=null)throw new IllegalStateException("already in an assigned match");
         if(mode==Mode.RANKED){
             if(!authority.enabled(gameId))throw new IllegalStateException("ranked results are not configured for this game");
@@ -99,6 +99,15 @@ public final class Competition {
         put(m);
         return m;
     }
+    public Match assignTournament(User first,User second,String gameId,UUID room,long now){
+        game(gameId);
+        if(first.id().equals(second.id())||active(first.id())!=null||active(second.id())!=null||queued(first.id())||queued(second.id())||byRoom.containsKey(room))
+            throw new IllegalStateException("tournament entrant unavailable");
+        Match m=new Match(UUID.randomUUID(),room,gameId,Mode.TOURNAMENT,List.of(first,second),State.WAITING,now,null,null,null,null,null,null,List.of());
+        put(m);return m;
+    }
+    public long runningCount(){return matches.values().stream().filter(m->m.state()==State.RUNNING).count();}
+    public int queuedCount(){return tickets.size();}
     private void put(Match m){
         Match old=matches.put(m.id(),m);
         if(old!=null){

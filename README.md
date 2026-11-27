@@ -2,7 +2,7 @@
 
 A self-hostable PC game LAN multiplayer and competitive platform. Shared networking engine: [Network Core EX](https://github.com/xzcode/network-core-ex).
 
-**Status: M6–M7 match archive, local replays and manual moderation baseline; Windows native packaging/network acceptance passed, actual commercial-game acceptance open. No stable release yet.**
+**Status: M8–M9 teams, individual tournaments and role-based operations baseline; Windows native packaging/network acceptance passed, actual commercial-game acceptance open. No stable release yet.**
 
 Spring Boot WebFlux / Reactor Netty / Java 21 accounts and lobby, optional reactive MongoDB account persistence,
 Vue 3 desktop UI and a Go agent/relay integrating the pinned Network Core EX
@@ -14,6 +14,8 @@ and [M1 implementation](docs/M1_IMPLEMENTATION.md). Windows x64 native SCM/Wintu
 The [M5 competition module](docs/M5_COMPETITION.md) adds game/mode queues, managed match rooms, signed-result Elo, rankings and personal match history. Ranked play is disabled until a trusted external result issuer is configured.
 
 The [M6–M7 archive and moderation module](docs/M6_M7_ARCHIVE_AND_MODERATION.md) adds participant match details, opt-in public live status, local replay archives, reports, review, warning and audited account suspension. Real game replay playback, spectating and anti-cheat remain open.
+
+The [M8–M9 community and operations module](docs/M8_M9_COMMUNITY_OPERATIONS.md) adds teams, opt-in 1v1 single-elimination tournaments, role-based operator access, service overview, session/room controls and audit. Tournament adjudication is manual and independent of ranked Elo.
 
 ## Product scope
 

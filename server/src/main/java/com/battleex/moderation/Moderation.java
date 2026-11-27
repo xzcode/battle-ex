@@ -108,6 +108,8 @@ public final class Moderation {
     public Page<Suspension> suspensions(int offset,int limit){
         return page(suspensions.values().stream().sorted(Comparator.comparingLong(Suspension::createdAt).reversed().thenComparing(Suspension::id)).toList(),offset,limit);
     }
+    public long pendingCount(){return reports.values().stream().filter(r->r.status()==Status.OPEN).count();}
+    public long activeCount(long now){return suspensions.values().stream().filter(s->s.active(now)).count();}
     public Dump exportState(){
         return new Dump(reports.values().stream().sorted(Comparator.comparing(Report::id)).toList(),suspensions.values().stream().sorted(Comparator.comparing(Suspension::id)).toList());
     }

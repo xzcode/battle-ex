@@ -7,6 +7,10 @@ import GameLibrary from './GameLibrary.vue'
 import Competition from './Competition.vue'
 import MatchCenter from './MatchCenter.vue'
 import Moderation from './Moderation.vue'
+import TeamCenter from './TeamCenter.vue'
+import TournamentCenter from './TournamentCenter.vue'
+import OperationsCenter from './OperationsCenter.vue'
+import './community.css'
 import './archive.css'
 import './competition.css'
 import games from '../game-catalog.json'
@@ -20,7 +24,7 @@ const gameName=(id:string)=>games.find(g=>g.id===id)?.[language.value]||id
 const endpoint=ref(localStorage.getItem('battle.server')||'http://127.0.0.1:8080')
 const origin=ref(''),username=ref(''),password=ref(''),register=ref(false),token=ref('')
 const busy=ref(false),error=ref(''),connected=ref(false),lobby=ref<Lobby|null>(null)
-const view=ref<'lobby'|'relays'|'games'|'competition'|'archive'|'moderation'>('lobby')
+const view=ref<'lobby'|'relays'|'games'|'competition'|'archive'|'moderation'|'teams'|'events'|'operations'>('lobby')
 const libraryGame=ref('warcraft3')
 const filter=ref('all'),search=ref(''),modal=ref<'create'|'join'|null>(null)
 const roomName=ref(''),gameId=ref('custom'),capacity=ref(8),visibility=ref<Visibility>('PUBLIC')
@@ -202,6 +206,9 @@ onBeforeUnmount(()=>{if(netPoll)clearInterval(netPoll);reset();networkReconcile(
    <button class="side-item" :class="{selected:view==='competition'}" @click="view='competition'"><span class="side-glyph" aria-hidden="true">◎</span>{{language==='zh'?'匹配与排行':'Matchmaking'}} <span v-if="queued" class="state waiting">{{language==='zh'?'排队':'Queued'}}</span></button>
    <button class="side-item" :class="{selected:view==='archive'}" @click="view='archive'"><span class="side-glyph" aria-hidden="true">▤</span>{{language==='zh'?'比赛中心':'Match center'}}</button>
    <button class="side-item" :class="{selected:view==='moderation'}" @click="view='moderation'"><span class="side-glyph" aria-hidden="true">◇</span>{{language==='zh'?'公平竞技':'Fair play'}}</button>
+   <button class="side-item" :class="{selected:view==='teams'}" @click="view='teams'"><span class="side-glyph" aria-hidden="true">♧</span>{{language==='zh'?'战队':'Teams'}}</button>
+   <button class="side-item" :class="{selected:view==='events'}" @click="view='events'"><span class="side-glyph" aria-hidden="true">⌘</span>{{language==='zh'?'锦标赛':'Tournaments'}}</button>
+   <button v-if="lobby.operationsConfigured" class="side-item" :class="{selected:view==='operations'}" @click="view='operations'"><span class="side-glyph" aria-hidden="true">⚙</span>{{language==='zh'?'运营管理':'Operations'}}</button>
    <div class="side-caption">{{t('gameCatalog')}}</div>
    <button v-for="g in games" :key="g.id" class="side-item" :class="{selected:view==='lobby'&&filter===g.id}" @click="view='lobby';filter=g.id"><span class="game-icon" :class="g.color">{{g.short}}</span><span>{{gameName(g.id)}}</span></button>
    <button class="side-item" :class="{selected:view==='games'}" @click="openLibrary()"><span class="side-glyph" aria-hidden="true">▣</span>{{language==='zh'?'本地游戏库':'Game library'}}</button>
@@ -210,7 +217,7 @@ onBeforeUnmount(()=>{if(netPoll)clearInterval(netPoll);reset();networkReconcile(
    <div class="side-bottom"><div class="side-note">{{t('adapterNote')}}</div><div class="version">v0.1 · {{t('devBuild')}}</div></div>
   </aside>
   <main class="workspace">
-   <header class="topbar"><div class="crumb">{{t('lobby')}} <span> / </span> {{view==='archive'?(language==='zh'?'比赛中心':'Match center'):view==='moderation'?(language==='zh'?'公平竞技':'Fair play'):view==='competition'?(language==='zh'?'匹配与排行':'Matchmaking'):view==='games'?(language==='zh'?'本地游戏库':'Game library'):view==='relays'?(language==='zh'?'中继节点监控':'Relay monitor'):filter==='all'?t('all'):gameName(filter)}}</div>
+   <header class="topbar"><div class="crumb">{{t('lobby')}} <span> / </span> {{view==='teams'?(language==='zh'?'战队':'Teams'):view==='events'?(language==='zh'?'锦标赛':'Tournaments'):view==='operations'?(language==='zh'?'运营管理':'Operations'):view==='archive'?(language==='zh'?'比赛中心':'Match center'):view==='moderation'?(language==='zh'?'公平竞技':'Fair play'):view==='competition'?(language==='zh'?'匹配与排行':'Matchmaking'):view==='games'?(language==='zh'?'本地游戏库':'Game library'):view==='relays'?(language==='zh'?'中继节点监控':'Relay monitor'):filter==='all'?t('all'):gameName(filter)}}</div>
     <div class="top-actions"><span class="connection"><i :class="{online:connected}"></i>{{connected?t('live'):t('reconnecting')}}</span><button class="quiet" @click="toggleLanguage">{{t('language')}}</button><div class="user-avatar">{{lobby.user.username.slice(0,1).toUpperCase()}}</div><span class="username">{{lobby.user.username}}</span><button class="quiet" :disabled="busy" @click="signOut">{{t('signOut')}}</button></div>
    </header>
    <RelayMonitor v-if="view==='relays'" :origin="origin" :token="token" :language="language"/>
@@ -218,6 +225,9 @@ onBeforeUnmount(()=>{if(netPoll)clearInterval(netPoll);reset();networkReconcile(
    <Competition v-else-if="view==='competition'" :origin="origin" :token="token" :language="language" :competition="lobby.competition" :active-room="!!room" :user-id="me" :revision="lobby.revision" :refresh-lobby="refresh" :open-room="()=>{view='lobby';filter='all'}"/>
    <MatchCenter v-else-if="view==='archive'" :origin="origin" :token="token" :user-id="me" :language="language" :active-match="managedMatch"/>
    <Moderation v-else-if="view==='moderation'" :origin="origin" :token="token" :language="language" :configured="!!lobby.moderationConfigured"/>
+   <TeamCenter v-else-if="view==='teams'" :origin="origin" :token="token" :user-id="me" :language="language"/>
+   <TournamentCenter v-else-if="view==='events'" :origin="origin" :token="token" :user-id="me" :language="language" :configured="!!lobby.operationsConfigured" :busy-in-room="!!room||queued"/>
+   <OperationsCenter v-else-if="view==='operations'" :origin="origin" :token="token" :language="language" :configured="!!lobby.operationsConfigured"/>
    <div v-else class="workspace-body">
     <div class="main-panel">
      <div class="headline"><div><div class="eyebrow">BATTLE EX / LOBBY</div><h1>{{t('rooms')}}</h1><p class="muted">{{lobby.rooms.length}} {{t('roomCount')}} · {{lobby.signedInUsers}} {{t('signedIn')}}</p></div><button class="primary" :disabled="!!room||busy||queued" @click="openCreate">＋ {{t('create')}}</button></div>
@@ -236,7 +246,7 @@ onBeforeUnmount(()=>{if(netPoll)clearInterval(netPoll);reset();networkReconcile(
      <div v-if="!room" class="empty room-empty"><div class="empty-icon">◈</div><h3>{{t('noActive')}}</h3><p>{{t('noActiveBody')}}</p></div>
      <template v-else>
       <div class="room-heading"><div class="eyebrow">{{gameName(room.gameId)}}</div><h2>{{room.name}}</h2><span class="state" :class="room.state==='IN_GAME'?'playing':'waiting'">{{room.state==='IN_GAME'?t('playing'):t('waiting')}}</span></div>
-      <div v-if="managedMatch" class="competition-room-note">{{managedMatch.mode==='RANKED'?(language==='zh'?'排位 1v1 · 可信结果结算':'Ranked 1v1 · signed results only'):(language==='zh'?'休闲 1v1 · 不计分':'Casual 1v1 · unrated')}}<code>{{managedMatch.id}}</code><button class="link" @click="view='archive'">{{language==='zh'?'比赛详情':'Match details'}}</button></div>
+      <div v-if="managedMatch" class="competition-room-note">{{managedMatch.mode==='RANKED'?(language==='zh'?'排位 1v1 · 可信结果结算':'Ranked 1v1 · signed results only'):managedMatch.mode==='TOURNAMENT'?(language==='zh'?'赛事 1v1 · 人工裁决':'Tournament 1v1 · manual adjudication'):(language==='zh'?'休闲 1v1 · 不计分':'Casual 1v1 · unrated')}}<code>{{managedMatch.id}}</code><button class="link" @click="view='archive'">{{language==='zh'?'比赛详情':'Match details'}}</button></div>
       <div class="member-header">{{t('players')}} <span>{{room.members.length}} / {{room.capacity}}</span></div>
       <div class="members"><div v-for="m in room.members" :key="m.userId" class="member"><span class="user-avatar">{{(lobby.memberNames[m.userId]||'?')[0].toUpperCase()}}</span><div class="member-name"><strong>{{lobby.memberNames[m.userId]||m.userId}}</strong><small v-if="m.userId===room.host">{{t('host')}}</small><small v-if="m.gameBuild" :title="m.gameBuild.sha256">{{m.gameBuild.fileVersion||'—'}} · {{m.gameBuild.architecture}} · {{m.gameBuild.sha256.slice(0,8)}}</small><small v-else>{{language==='zh'?'版本未上报':'Build unknown'}}</small></div><span class="state" :class="m.ready?'waiting':'idle'">{{m.ready?t('ready'):t('notReady')}}</span></div></div>
       <div class="room-build-summary" :class="{mismatch:buildMismatch}">{{buildSummary}}</div>

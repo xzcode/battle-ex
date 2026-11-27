@@ -5,6 +5,9 @@ import com.battleex.competition.Competition;
 import com.battleex.competition.ResultAuthority;
 import com.battleex.competition.MatchArchive;
 import com.battleex.moderation.Moderation;
+import com.battleex.community.Teams;
+import com.battleex.community.Tournaments;
+import com.battleex.operations.Operations;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 
 import java.nio.charset.StandardCharsets;
@@ -22,7 +25,7 @@ public final class Platform {
     public record User(UUID id, String username) {}
     public record Login(String token, Instant expiresAt, User user) {}
     public record Lobby(User user, long revision, int signedInUsers, List<RoomDirectory.RoomSummary> rooms,
-                        RoomDirectory.RoomView activeRoom, Map<UUID,String> memberNames, Competition.View competition,boolean moderationConfigured) {}
+                        RoomDirectory.RoomView activeRoom, Map<UUID,String> memberNames, Competition.View competition,boolean moderationConfigured,boolean operationsConfigured) {}
     public record Session(User user, Instant expiresAt, String digest) {}
     public static final class Unauthorized extends RuntimeException {
         public Unauthorized() { super("authentication required or invalid credentials"); }
@@ -34,6 +37,9 @@ public final class Platform {
     private final Competition competition;
     private final MatchArchive archive=new MatchArchive();
     private final Moderation moderation;
+    private final Teams teams=new Teams();
+    private final Tournaments tournaments=new Tournaments();
+    private final Operations operations;
     private final Map<String,Session> sessions = new HashMap<>();
     private final Map<UUID,Session> byUser = new HashMap<>();
     private final BCryptPasswordEncoder passwords = new BCryptPasswordEncoder(12);
@@ -44,27 +50,31 @@ public final class Platform {
     private long revision;
 
     public Platform(AccountStore accounts, ReactiveWork work) {
-        this(accounts, work, Clock.systemUTC(), Duration.ofHours(12),ResultAuthority.disabled(),new Moderation(""));
+        this(accounts, work, Clock.systemUTC(), Duration.ofHours(12),ResultAuthority.disabled(),new Moderation(""),new Operations(""));
     }
     public Platform(AccountStore accounts,ReactiveWork work,ResultAuthority authority){
-        this(accounts,work,Clock.systemUTC(),Duration.ofHours(12),authority,new Moderation(""));
+        this(accounts,work,Clock.systemUTC(),Duration.ofHours(12),authority,new Moderation(""),new Operations(""));
     }
     public Platform(AccountStore accounts,ReactiveWork work,ResultAuthority authority,Moderation moderation){
-        this(accounts,work,Clock.systemUTC(),Duration.ofHours(12),authority,moderation);
+        this(accounts,work,Clock.systemUTC(),Duration.ofHours(12),authority,moderation,new Operations(""));
+    }
+    public Platform(AccountStore accounts,ReactiveWork work,ResultAuthority authority,Moderation moderation,Operations operations){
+        this(accounts,work,Clock.systemUTC(),Duration.ofHours(12),authority,moderation,operations);
     }
     Platform(AccountStore accounts, ReactiveWork work, Clock clock, Duration lifetime) {
-        this(accounts,work,clock,lifetime,ResultAuthority.disabled(),new Moderation(""));
+        this(accounts,work,clock,lifetime,ResultAuthority.disabled(),new Moderation(""),new Operations(""));
     }
-    Platform(AccountStore accounts, ReactiveWork work, Clock clock, Duration lifetime,ResultAuthority authority,Moderation moderation) {
+    Platform(AccountStore accounts, ReactiveWork work, Clock clock, Duration lifetime,ResultAuthority authority,Moderation moderation,Operations operations) {
         this.accounts = accounts; this.work = work; this.clock = clock; this.lifetime = lifetime;
-        this.competition=new Competition(authority);this.moderation=moderation;
+        this.competition=new Competition(authority);this.moderation=moderation;this.operations=operations;
+        if(operations.configured()&&!moderation.configured())throw new IllegalArgumentException("root operators require a configured moderator credential");
         dummyHash = passwords.encode(UUID.randomUUID().toString());
     }
 
-    public record StateDump(long revision,List<Session> sessions,List<RoomDirectory.StoredRoom> rooms,Competition.Dump competition,MatchArchive.Dump archive,Moderation.Dump moderation) {}
+    public record StateDump(long revision,List<Session> sessions,List<RoomDirectory.StoredRoom> rooms,Competition.Dump competition,MatchArchive.Dump archive,Moderation.Dump moderation,Teams.Dump teams,Tournaments.Dump tournaments,Operations.Dump operations) {}
     public synchronized StateDump exportState(){
         return new StateDump(revision,sessions.values().stream()
-                .sorted(Comparator.comparing(Session::digest)).toList(),rooms.exportState(),competition.exportState(),archive.exportState(),moderation.exportState());
+                .sorted(Comparator.comparing(Session::digest)).toList(),rooms.exportState(),competition.exportState(),archive.exportState(),moderation.exportState(),teams.exportState(),tournaments.exportState(),operations.exportState());
     }
     public synchronized void importState(StateDump state){
         Map<String,Session> next=new HashMap<>();
@@ -78,6 +88,7 @@ public final class Platform {
         rooms.importState(state.rooms());
         competition.importState(state.competition());
         archive.importState(state.archive(),competition);moderation.importState(state.moderation(),competition);
+        teams.importState(state.teams());tournaments.importState(state.tournaments(),competition);operations.importState(state.operations());
         var dump=competition.exportState();
         for(var ticket:dump.tickets())if(!users.containsKey(ticket.user().id())||rooms.activeRoom(ticket.user().id())!=null)
             throw new IllegalStateException("invalid persisted queued account");
@@ -131,7 +142,7 @@ public final class Platform {
             sessions.remove(prior.digest());
             var priorRoom = rooms.activeRoom(user.id());
             if (priorRoom != null) depart(user.id(),priorRoom.id());
-            competition.cancel(user.id());
+            competition.cancel(user.id());tournaments.clearCheckIns(user.id());
         }
         sessions.put(session.digest(), session);
         revision++;
@@ -164,7 +175,7 @@ public final class Platform {
             var memberSession = byUser.get(member.userId());
             if (memberSession != null) names.put(member.userId(), memberSession.user().username());
         }
-        return new Lobby(s.user(), revision, byUser.size(), rooms.listPublic(), room, Map.copyOf(names),competition.view(s.user().id()),moderation.configured());
+        return new Lobby(s.user(), revision, byUser.size(), rooms.listPublic(), room, Map.copyOf(names),competition.view(s.user().id()),moderation.configured(),operations.configured());
     }
     public synchronized RoomDirectory.RoomView create(String token, String name, String gameId,
                 int capacity, RoomDirectory.Visibility visibility) {
@@ -174,6 +185,7 @@ public final class Platform {
         var actor=require(token).user().id();
         if(competition.queued(actor))throw new IllegalStateException("cancel matchmaking before creating a room");
         var result = rooms.create(actor, name, gameId, capacity, visibility);
+        tournaments.clearCheckIns(actor);
         revision++;
         return result;
     }
@@ -182,6 +194,7 @@ public final class Platform {
         if(competition.queued(actor))throw new IllegalStateException("cancel matchmaking before joining a room");
         if(competition.forRoom(id)!=null)throw new SecurityException("matchmaking rooms are assigned by the server");
         var result = rooms.join(actor, id, invite);
+        tournaments.clearCheckIns(actor);
         revision++;
         return result;
     }
@@ -242,7 +255,7 @@ public final class Platform {
             revision++;
             var room = rooms.activeRoom(s.user().id());
             if (room != null) depart(s.user().id(),room.id());
-            competition.cancel(s.user().id());
+            competition.cancel(s.user().id());tournaments.clearCheckIns(s.user().id());
         }
     }
     private void depart(UUID actor,UUID roomId){
@@ -263,12 +276,12 @@ public final class Platform {
             revision++;
         }
     }
-    public String competitionFingerprint(){return competition.authority().configurationFingerprint()+moderation.fingerprint();}
+    public String competitionFingerprint(){return competition.authority().configurationFingerprint()+moderation.fingerprint()+operations.fingerprint();}
     public synchronized Competition.View enqueue(String token,String gameId,Competition.Mode mode){
         var user=require(token).user();
         if(rooms.activeRoom(user.id())!=null)throw new IllegalStateException("leave your active room before matchmaking");
         long now=clock.instant().getEpochSecond();
-        competition.enqueue(user,gameId,mode,now);
+        competition.enqueue(user,gameId,mode,now);tournaments.clearCheckIns(user.id());
         revision++;matchWaiting(now);
         return competition.view(user.id());
     }
@@ -324,7 +337,7 @@ public final class Platform {
     }
     public synchronized List<Moderation.Warning> warnings(String token){return moderation.warnings(require(token).user().id());}
     private User moderator(String token,String credential){
-        User actor=require(token).user();moderation.authorize(credential);return actor;
+        User actor=operator(token,credential);operations.requireModeration(actor.id());return actor;
     }
     public synchronized Moderation.Page<Moderation.Report> reviewReports(String token,String key,Moderation.Status status,int offset,int limit){
         moderator(token,key);return moderation.reports(status,offset,limit);
@@ -332,6 +345,7 @@ public final class Platform {
     public synchronized Moderation.Report reviewReport(String token,String key,UUID id,Moderation.ReviewInput input){
         User actor=moderator(token,key);
         var result=moderation.review(id,actor,input,clock.instant().getEpochSecond());
+        operations.audit(actor,"REPORT_REVIEW",id.toString(),input.resolution(),now());
         // In the same authority commit, invalidate the banned account's
         // token, queue and assigned room. Network authorization consults
         // current session/membership; old relay grants are rejected.
@@ -344,8 +358,131 @@ public final class Platform {
         moderator(token,key);return moderation.suspensions(offset,limit);
     }
     public synchronized Moderation.Suspension revokeSuspension(String token,String key,UUID id,String reason){
-        var result=moderation.revoke(id,moderator(token,key),reason,clock.instant().getEpochSecond());
+        var actor=moderator(token,key);
+        var result=moderation.revoke(id,actor,reason,clock.instant().getEpochSecond());
+        operations.audit(actor,"SUSPENSION_REVOKED",id.toString(),reason,now());
         revision++;return result;
+    }
+
+    private long now(){return clock.instant().getEpochSecond();}
+    public synchronized Teams.Page<Teams.Team> teams(String token,String search,int offset,int limit){
+        require(token);return teams.list(search,offset,limit);
+    }
+    public synchronized Teams.Team myTeam(String token){return teams.myTeam(require(token).user().id());}
+    public synchronized Teams.Detail teamDetail(String token,UUID id){return teams.detail(require(token).user().id(),id);}
+    public synchronized Teams.Team createTeam(String token,String name,String tag,String desc){var t=teams.create(require(token).user(),name,tag,desc,now());revision++;return t;}
+    public synchronized Teams.Team editTeam(String token,UUID id,String name,String tag,String desc){var t=teams.update(require(token).user().id(),id,name,tag,desc);revision++;return t;}
+    public synchronized Teams.Application applyTeam(String token,UUID id,String message){var a=teams.apply(require(token).user(),id,message,now());revision++;return a;}
+    public synchronized void withdrawTeam(String token,UUID id){teams.withdraw(require(token).user().id(),id);revision++;}
+    public synchronized Teams.Team reviewTeam(String token,UUID id,UUID user,boolean accept){var t=teams.review(require(token).user().id(),id,user,accept,now(),moderation.activeSuspension(user,now())==null);revision++;return t;}
+    public synchronized Teams.Team teamRole(String token,UUID id,UUID user,Teams.Role role){var t=teams.role(require(token).user().id(),id,user,role);revision++;return t;}
+    public synchronized Teams.Team transferTeam(String token,UUID id,UUID user){
+        var actor=require(token).user();
+        if(user==null||moderation.activeSuspension(user,now())!=null)throw new IllegalArgumentException("eligible owner required");
+        var t=teams.transfer(actor.id(),id,user);revision++;return t;
+    }
+    public synchronized void removeTeamMember(String token,UUID id,UUID user){teams.remove(require(token).user().id(),id,user);revision++;}
+    public synchronized void disbandTeam(String token,UUID id){teams.disband(require(token).user().id(),id);revision++;}
+
+    private User operator(String token,String key){
+        User actor=require(token).user();moderation.authorize(key);return actor;
+    }
+    private User eventOperator(String token,String key){
+        User actor=operator(token,key);operations.require(actor.id(),Operations.Role.EVENT_MANAGER);return actor;
+    }
+    public synchronized Operations.Access operatorAccess(String token,String key){
+        var actor=operator(token,key);return operations.access(actor.id());
+    }
+    public synchronized Operations.Overview overview(String token,String key){
+        var actor=operator(token,key);operations.requireOverview(actor.id());
+        return new Operations.Overview(byUser.size(),rooms.count(),competition.runningCount(),competition.queuedCount(),teams.count(),tournaments.count(),
+                moderation.pendingCount(),moderation.activeCount(now()),work.persistent());
+    }
+    public synchronized List<Operations.Grant> operatorRoles(String token,String key){return operations.grants(operator(token,key).id());}
+    public Mono<Operations.Grant> grantOperator(String token,String key,String username,Operations.Role role,String reason){
+        return work.state(()->{operations.requireRoot(operator(token,key).id());return username(username);})
+            .flatMap(name->accounts.find(name).switchIfEmpty(Mono.error(new IllegalArgumentException("account not found"))))
+            .flatMap(account->work.state(()->{
+                var actor=operator(token,key);
+                var g=operations.grant(actor,new User(account.id(),account.username()),role,reason,now());revision++;return g;
+            }));
+    }
+    public synchronized void revokeOperator(String token,String key,UUID target,Operations.Role role,String reason){operations.revoke(operator(token,key),target,role,reason,now());revision++;}
+    public synchronized Teams.Page<Operations.Event> operatorAudit(String token,String key,int offset,int limit){return operations.events(operator(token,key).id(),offset,limit);}
+    public synchronized Teams.Page<Operations.SessionRow> operatorSessions(String token,String key,int offset,int limit){
+        operations.requireRoot(operator(token,key).id());
+        var rows=byUser.values().stream().sorted(Comparator.comparing(s->s.user().username()))
+                .map(s->{
+                    var room=rooms.activeRoom(s.user().id());
+                    return new Operations.SessionRow(s.user(),s.expiresAt().getEpochSecond(),
+                            room==null?null:room.id(),competition.queued(s.user().id()));
+                }).toList();
+        return Teams.page(rows,offset,limit);
+    }
+    public synchronized void disconnectSession(String token,String key,UUID target,String reason){
+        var actor=operator(token,key);operations.requireRoot(actor.id());Operations.validateReason(reason);
+        if(target==null||target.equals(actor.id()))throw new IllegalArgumentException("another account is required");
+        var session=byUser.get(target);
+        if(session==null)throw new IllegalArgumentException("active session not found");
+        remove(session);
+        operations.audit(actor,"SESSION_DISCONNECTED",target.toString(),reason,now());
+    }
+    public synchronized Teams.Page<Operations.RoomRow> operatorRooms(String token,String key,int offset,int limit){
+        operations.requireRoot(operator(token,key).id());
+        return Teams.page(rooms.exportState().stream().map(stored->stored.view())
+                .map(r->new Operations.RoomRow(r.id(),r.name(),r.gameId(),r.visibility().name(),r.state().name(),r.host(),r.members().size(),r.capacity()))
+                .sorted(Comparator.comparing(Operations.RoomRow::id)).toList(),offset,limit);
+    }
+    public synchronized void closeRoom(String token,String key,UUID id,String reason){
+        var actor=operator(token,key);operations.requireRoot(actor.id());Operations.validateReason(reason);
+        var room=rooms.exportState().stream().map(r->r.view()).filter(r->r.id().equals(id)).findFirst()
+                .orElseThrow(()->new IllegalArgumentException("room not found"));
+        var match=competition.forRoom(room.id());
+        if(match!=null){archive.close(match.id());competition.end(room.id(),true,now());}
+        rooms.closeManaged(room.id());operations.audit(actor,"ROOM_CLOSED",id.toString(),reason,now());revision++;
+    }
+    public synchronized Teams.Page<Tournaments.Event> events(String token,int offset,int limit){require(token);return tournaments.list(offset,limit);}
+    public synchronized Tournaments.Event event(String token,UUID id){require(token);return tournaments.get(id);}
+    public synchronized Tournaments.Event createEvent(String token,String key,String name,String game,String desc,int capacity){
+        var actor=eventOperator(token,key);var e=tournaments.create(actor,name,game,desc,capacity,now());operations.audit(actor,"EVENT_CREATED",e.id().toString(),null,now());revision++;return e;
+    }
+    public synchronized Tournaments.Event startEvent(String token,String key,UUID id){
+        var actor=eventOperator(token,key);var e=tournaments.start(id);operations.audit(actor,"EVENT_STARTED",id.toString(),null,now());revision++;return e;
+    }
+    public synchronized Tournaments.Event registerEvent(String token,UUID id){var e=tournaments.register(id,require(token).user(),now());revision++;return e;}
+    public synchronized Tournaments.Event withdrawEvent(String token,UUID id){var e=tournaments.withdraw(id,require(token).user().id());revision++;return e;}
+    private boolean freeForEvent(UUID user){
+        return byUser.containsKey(user)&&rooms.activeRoom(user)==null&&!competition.queued(user)&&moderation.activeSuspension(user,now())==null;
+    }
+    public synchronized Tournaments.Event checkInEvent(String token,UUID id,int slot,boolean ready){
+        var actor=require(token).user();
+        if(ready&&!freeForEvent(actor.id()))throw new IllegalStateException("leave your room or queue before checking in");
+        var e=tournaments.checkIn(id,slot,actor.id(),ready);
+        var s=tournaments.slot(id,slot);
+        if(s.checkedIn().size()==2){
+            if(!freeForEvent(s.first()))tournaments.clearCheckIns(s.first());
+            if(!freeForEvent(s.second()))tournaments.clearCheckIns(s.second());
+            s=tournaments.slot(id,slot);
+            if(s.checkedIn().size()==2){
+                var first=tournaments.entrant(e,s.first());var second=tournaments.entrant(e,s.second());
+                var room=rooms.create(first.id(),"Tournament 1v1",e.gameId(),2,RoomDirectory.Visibility.PRIVATE);
+                rooms.join(second.id(),room.id(),rooms.invitation(first.id(),room.id()));
+                var match=competition.assignTournament(first,second,e.gameId(),room.id(),now());
+                e=tournaments.assign(id,slot,match.id());
+            }else e=tournaments.get(id);
+        }
+        revision++;return e;
+    }
+    public synchronized Tournaments.Event retryEvent(String token,String key,UUID id,int slot,String reason){
+        var actor=eventOperator(token,key);Operations.validateReason(reason);
+        var e=tournaments.retry(id,slot,competition);operations.audit(actor,"EVENT_RETRY",id+":"+slot,reason,now());revision++;return e;
+    }
+    public synchronized Tournaments.Event decideEvent(String token,String key,UUID id,int slot,UUID winner,Tournaments.Source source,String reason){
+        var actor=eventOperator(token,key);
+        var e=tournaments.decide(id,slot,actor,winner,source,reason,now(),competition);operations.audit(actor,"EVENT_DECIDED",id+":"+slot,reason,now());revision++;return e;
+    }
+    public synchronized Tournaments.Event cancelEvent(String token,String key,UUID id,String reason){
+        var actor=eventOperator(token,key);var e=tournaments.cancel(id,reason,competition);operations.audit(actor,"EVENT_CANCELLED",id.toString(),reason,now());revision++;return e;
     }
 
     private static String digest(String token) {

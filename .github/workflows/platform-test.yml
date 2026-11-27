@@ -36,6 +36,7 @@ jobs:
         run: |
           bash scripts/test-mongo.sh --competition
           bash scripts/test-mongo.sh --archive-moderation
+          bash scripts/test-mongo.sh --community-operations
       - name: Three-session desktop browser regression
         working-directory: apps/desktop
         run: |

@@ -16,7 +16,7 @@ const count=computed(()=>tab.value==='leaderboard'?board.value?.total??0:history
 const waited=computed(()=>ticket.value?Math.max(0,now.value-ticket.value.queuedAt):0)
 const duration=computed(()=>Math.floor(waited.value/60)+':'+String(waited.value%60).padStart(2,'0'))
 const name=(id:string)=>catalog.find(p=>p.id===id)?.[props.language]??id
-const modeName=(m:MatchMode)=>m==='RANKED'?l('Ranked','排位'):l('Casual','休闲')
+const modeName=(m:MatchMode)=>m==='RANKED'?l('Ranked','排位'):m==='TOURNAMENT'?l('Tournament','赛事'):l('Casual','休闲')
 function state(s:string){return ({WAITING:l('Waiting','等待准备'),RUNNING:l('In game','比赛中'),AWAITING_RESULT:l('Awaiting verified result','等待可信结果'),FINISHED:l('Finished · unrated','已结束 · 不计分'),CANCELLED:l('Cancelled','已取消'),ABANDONED:l('Abandoned · unrated','已中止 · 不计分'),NO_RESULT:l('No trusted result','无可信结果'),RATED:l('Rated','已结算')} as Record<string,string>)[s]??s}
 function opponents(m:MatchRecord){return m.players.filter(p=>p.id!==props.userId).map(p=>p.username).join(', ')}
 function result(m:MatchRecord){
