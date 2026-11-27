@@ -168,11 +168,11 @@ onBeforeUnmount(()=>{if(netPoll)clearInterval(netPoll);reset();networkReconcile(
   <aside class="sidebar">
    <div class="brand"><div class="brand-mark">B<span>×</span></div><span>Battle EX</span></div>
    <div class="side-caption">{{t('lobby')}}</div>
-   <button class="side-item" :class="{selected:view==='lobby'&&filter==='all'}" @click="view='lobby';filter='all'"><span class="side-glyph">▦</span>{{t('all')}}</button>
+   <button class="side-item" :class="{selected:view==='lobby'&&filter==='all'}" @click="view='lobby';filter='all'"><span class="side-glyph" aria-hidden="true">▦</span>{{t('all')}}</button>
    <div class="side-caption">{{t('gameCatalog')}}</div>
    <button v-for="g in games" :key="g.id" class="side-item" :class="{selected:view==='lobby'&&filter===g.id}" @click="view='lobby';filter=g.id"><span class="game-icon" :class="g.color">{{g.short}}</span><span>{{gameName(g.id)}}</span></button>
    <div class="side-caption">{{language==='zh'?'网络':'Network'}}</div>
-   <button class="side-item" :class="{selected:view==='relays'}" @click="view='relays'"><span class="side-glyph">◈</span>{{language==='zh'?'中继节点监控':'Relay monitor'}}</button>
+   <button class="side-item" :class="{selected:view==='relays'}" @click="view='relays'"><span class="side-glyph" aria-hidden="true">◈</span>{{language==='zh'?'中继节点监控':'Relay monitor'}}</button>
    <div class="side-bottom"><div class="side-note">{{t('adapterNote')}}</div><div class="version">v0.1 · {{t('devBuild')}}</div></div>
   </aside>
   <main class="workspace">
