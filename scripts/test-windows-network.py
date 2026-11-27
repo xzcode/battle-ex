@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Native Windows integration. Only run on a disposable GitHub-hosted VM."""
+import base64
 import hashlib
 import json
 import os
@@ -32,9 +33,26 @@ def run(*args, **kw):
     return subprocess.run([str(x) for x in args], check=True, **kw)
 
 def ps(script, env=None, capture=False):
-    return run(PS, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
-               "$ErrorActionPreference='Stop'; " + script,
-               env=env, capture_output=capture, text=True)
+    # Avoid Windows PowerShell's native -Command quoting/multiline parsing.
+    # Script bodies contain environment references, not credential values.
+    source = "$ErrorActionPreference='Stop';\ntry {\n" + script + "\nexit 0\n} catch {\n[Console]::Error.WriteLine($_.Exception.Message); exit 1\n}"
+    encoded = base64.b64encode(source.encode("utf-16-le")).decode("ascii")
+    result = subprocess.run([str(PS), "-NoLogo", "-NoProfile", "-NonInteractive",
+                             "-EncodedCommand", encoded], env=env, capture_output=True)
+    stdout = result.stdout.decode("utf-8", errors="replace")
+    stderr = result.stderr.decode("utf-8", errors="replace")
+    # Never emit ephemeral fixture secrets even on errors.
+    effective = env if env is not None else os.environ
+    for name in ("BATTLE_TEST_PASSWORD", "BATTLE_TEST_P12_PASSWORD", "SERVER_SSL_KEY_STORE_PASSWORD"):
+        value = effective.get(name)
+        if value:
+            stdout = stdout.replace(value, "[redacted]")
+            stderr = stderr.replace(value, "[redacted]")
+    if result.returncode:
+        raise RuntimeError("Windows PowerShell failed ({}): {}".format(result.returncode, stderr.strip() or stdout.strip()))
+    if not capture and stdout.strip():
+        print(stdout.strip(), flush=True)
+    return subprocess.CompletedProcess(["powershell", "-EncodedCommand", "<fixture>"], result.returncode, stdout, stderr)
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -99,11 +117,19 @@ with tempfile.TemporaryDirectory(prefix="bex-windows-ci-") as work:
         # Real non-administrator local accounts. Password is ephemeral and read
         # from environment rather than printed or placed in a command line.
         sid = ps("""
-            $password=ConvertTo-SecureString $env:BATTLE_TEST_PASSWORD -AsPlainText -Force
+            Import-Module Microsoft.PowerShell.LocalAccounts
+            $password=ConvertTo-SecureString -String $env:BATTLE_TEST_PASSWORD -AsPlainText -Force
+            $users=Get-LocalGroup -SID ([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-545'))
+            $admins=Get-LocalGroup -SID ([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
             foreach($name in @($env:BATTLE_TEST_ALLOWED,$env:BATTLE_TEST_DENIED)){
                 $u=New-LocalUser -Name $name -Password $password -Description 'Disposable Battle EX CI'
-                $users=[System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
-                Add-LocalGroupMember -SID $users -Member $u -ErrorAction SilentlyContinue
+                $memberId=$u.SID.Value
+                if(-not @(Get-LocalGroupMember -Group $users.Name | Where-Object {$_.SID.Value -eq $memberId}).Count){
+                    Add-LocalGroupMember -Group $users.Name -Member $u
+                }
+                if(@(Get-LocalGroupMember -Group $admins.Name | Where-Object {$_.SID.Value -eq $memberId}).Count){
+                    throw 'Fixture user must not be an administrator'
+                }
             }
             (Get-LocalUser -Name $env:BATTLE_TEST_ALLOWED).SID.Value
         """, env=env, capture=True).stdout.strip()
@@ -155,14 +181,14 @@ with tempfile.TemporaryDirectory(prefix="bex-windows-ci-") as work:
         installed=True
         # Go test does not emit the temporary bearer tokens or passwords.
         run("go","test","-v","-count=1","-timeout=240s","-run","^TestWindowsInstalledService$","./internal/serviceipc",cwd=ROOT/"agent",env=env)
-        ps("Get-NetIPAddress -InterfaceAlias battle0 -ErrorAction SilentlyContinue | Where-Object {$_.IPAddress -like '10.1*'} | ForEach-Object {throw 'Virtual IP was not removed'}")
+        ps("Get-NetIPAddress -ErrorAction SilentlyContinue | Where-Object {$_.InterfaceAlias -eq 'battle0' -and $_.IPAddress -like '10.1*'} | ForEach-Object {throw 'Virtual IP was not removed'}")
         print("PASS: Windows service integration complete",flush=True)
     finally:
         try:
             # Only remove the service and installation created in this fresh VM.
             if installed or ps("if(Get-Service BattleEXNetwork -ErrorAction SilentlyContinue){'yes'}",capture=True).stdout.strip()=="yes":
                 run(PS,"-NoLogo","-NoProfile","-NonInteractive","-File",ROOT/"deploy/windows/uninstall-network-service.ps1")
-            ps("Get-Service BattleEXNetwork -ErrorAction SilentlyContinue | Format-List Name,Status; Get-NetAdapter -Name battle0 -ErrorAction SilentlyContinue | Format-List Name,Status",capture=True)
+            ps("Get-Service | Where-Object Name -eq BattleEXNetwork | Format-List Name,Status; Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object Name -eq battle0 | Format-List Name,Status",capture=True)
         finally:
             stop(relay)
             stop(java)
