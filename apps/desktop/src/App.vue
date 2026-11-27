@@ -2,6 +2,7 @@
 import {computed,onBeforeUnmount,ref,watch} from 'vue'
 import {ApiError,lobbySocket,request,serverOrigin,type Lobby,type Login,type Room,type Visibility} from './api'
 import {messages,type Language,type Message} from './i18n'
+import RelayMonitor from './RelayMonitor.vue'
 import {nativeAvailable,startNetwork,stopNetwork,networkStatus,type NetworkInfo,type NetworkStatus} from './native'
 
 const language=ref<Language>(localStorage.getItem('battle.lang')==='zh'?'zh':'en')
@@ -17,6 +18,7 @@ const gameName=(id:string)=>games.find(g=>g.id===id)?.[language.value]||id
 const endpoint=ref(localStorage.getItem('battle.server')||'http://127.0.0.1:8080')
 const origin=ref(''),username=ref(''),password=ref(''),register=ref(false),token=ref('')
 const busy=ref(false),error=ref(''),connected=ref(false),lobby=ref<Lobby|null>(null)
+const view=ref<'lobby'|'relays'>('lobby')
 const filter=ref('all'),search=ref(''),modal=ref<'create'|'join'|null>(null)
 const roomName=ref(''),gameId=ref('custom'),capacity=ref(8),visibility=ref<Visibility>('PUBLIC')
 const joinId=ref(''),joinCode=ref(''),invitation=ref(''),copied=ref(false)
@@ -87,7 +89,7 @@ const filtered=computed(()=> (lobby.value?.rooms||[]).filter(x=>
  (filter.value==='all'||x.gameId===filter.value)&&(!search.value||[x.name,gameName(x.gameId)].some(s=>s.toLowerCase().includes(search.value.toLowerCase())))))
 watch(()=>[room.value?.id,room.value?.host,room.value?.membershipRevision],()=>{invitation.value='';copied.value=false})
 function reset(message=''){
- token.value='';lobby.value=null;connected.value=false;modal.value=null;invitation.value='';joinCode.value='';password.value='';register.value=false
+ view.value='lobby';token.value='';lobby.value=null;connected.value=false;modal.value=null;invitation.value='';joinCode.value='';password.value='';register.value=false
  if(timer){clearTimeout(timer);timer=null}
  const old=ws;ws=null;old?.close();error.value=message
 }
@@ -166,16 +168,19 @@ onBeforeUnmount(()=>{if(netPoll)clearInterval(netPoll);reset();networkReconcile(
   <aside class="sidebar">
    <div class="brand"><div class="brand-mark">B<span>×</span></div><span>Battle EX</span></div>
    <div class="side-caption">{{t('lobby')}}</div>
-   <button class="side-item" :class="{selected:filter==='all'}" @click="filter='all'"><span class="side-glyph">▦</span>{{t('all')}}</button>
+   <button class="side-item" :class="{selected:view==='lobby'&&filter==='all'}" @click="view='lobby';filter='all'"><span class="side-glyph">▦</span>{{t('all')}}</button>
    <div class="side-caption">{{t('gameCatalog')}}</div>
-   <button v-for="g in games" :key="g.id" class="side-item" :class="{selected:filter===g.id}" @click="filter=g.id"><span class="game-icon" :class="g.color">{{g.short}}</span><span>{{gameName(g.id)}}</span></button>
+   <button v-for="g in games" :key="g.id" class="side-item" :class="{selected:view==='lobby'&&filter===g.id}" @click="view='lobby';filter=g.id"><span class="game-icon" :class="g.color">{{g.short}}</span><span>{{gameName(g.id)}}</span></button>
+   <div class="side-caption">{{language==='zh'?'网络':'Network'}}</div>
+   <button class="side-item" :class="{selected:view==='relays'}" @click="view='relays'"><span class="side-glyph">◈</span>{{language==='zh'?'中继节点监控':'Relay monitor'}}</button>
    <div class="side-bottom"><div class="side-note">{{t('adapterNote')}}</div><div class="version">v0.1 · {{t('devBuild')}}</div></div>
   </aside>
   <main class="workspace">
-   <header class="topbar"><div class="crumb">{{t('lobby')}} <span> / </span> {{filter==='all'?t('all'):gameName(filter)}}</div>
+   <header class="topbar"><div class="crumb">{{t('lobby')}} <span> / </span> {{view==='relays'?(language==='zh'?'中继节点监控':'Relay monitor'):filter==='all'?t('all'):gameName(filter)}}</div>
     <div class="top-actions"><span class="connection"><i :class="{online:connected}"></i>{{connected?t('live'):t('reconnecting')}}</span><button class="quiet" @click="toggleLanguage">{{t('language')}}</button><div class="user-avatar">{{lobby.user.username.slice(0,1).toUpperCase()}}</div><span class="username">{{lobby.user.username}}</span><button class="quiet" :disabled="busy" @click="signOut">{{t('signOut')}}</button></div>
    </header>
-   <div class="workspace-body">
+   <RelayMonitor v-if="view==='relays'" :origin="origin" :token="token" :language="language"/>
+   <div v-else class="workspace-body">
     <div class="main-panel">
      <div class="headline"><div><div class="eyebrow">BATTLE EX / LOBBY</div><h1>{{t('rooms')}}</h1><p class="muted">{{lobby.rooms.length}} {{t('roomCount')}} · {{lobby.signedInUsers}} {{t('signedIn')}}</p></div><button class="primary" :disabled="!!room||busy" @click="openCreate">＋ {{t('create')}}</button></div>
      <div class="toolbar"><input v-model="search" class="search" type="search" :placeholder="t('search')"><button class="secondary" :disabled="busy" @click="perform(refresh)">↻ {{t('refresh')}}</button><button class="secondary" :disabled="!!room||busy" @click="openJoin">{{t('privateJoin')}}</button></div>

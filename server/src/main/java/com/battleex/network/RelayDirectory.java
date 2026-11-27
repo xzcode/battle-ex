@@ -14,6 +14,9 @@ public final class RelayDirectory {
                   int priority, int maxConnections, long bytesPerSecond) {}
     public record Stats(int connections, long ingress_bytes, long egress_bytes, long dropped_packets) {}
     public record Heartbeat(String node, String instance, boolean draining, Stats stats) {}
+    public record Minute(long minute, int peakConnections, long ingressBytes, long egressBytes,
+                         long droppedPackets, int samples, int discontinuities) {}
+    public record History(String node, int retentionMinutes, List<Minute> minutes) {}
     public record Limits(int maxConnections, long bytesPerSecond) {}
     public record Candidate(String id, String region, String relayURL) {}
     public record PublicStatus(String id, String region, String state, long seenAt, Stats stats,
@@ -24,11 +27,22 @@ public final class RelayDirectory {
     private final Map<String,Node> nodes = new TreeMap<>();
     private final Map<String,Live> live = new HashMap<>();
     private final Map<String,Sample> samples = new HashMap<>();
+    private final Map<String,Long> generations = new HashMap<>();
+    private final Map<String,NavigableMap<Long,Minute>> history = new HashMap<>();
+    private long nextGeneration;
+    private long lastHistoryPrune = Long.MIN_VALUE;
+    private final int retentionMinutes;
     private final boolean dynamic;
     private final boolean ice;
 
     RelayDirectory(ObjectMapper mapper, String directory, boolean ice, String legacyId,
                    String legacyURL, String legacyStun, String legacySecretFile) throws Exception {
+        this(mapper,directory,ice,legacyId,legacyURL,legacyStun,legacySecretFile,1440);
+    }
+    RelayDirectory(ObjectMapper mapper, String directory, boolean ice, String legacyId,
+                   String legacyURL, String legacyStun, String legacySecretFile,int retentionMinutes) throws Exception {
+        if(retentionMinutes<1)throw new IllegalArgumentException("metrics retention must be positive");
+        this.retentionMinutes=retentionMinutes;
         this.ice=ice;
         dynamic=!directory.isBlank();
         if(dynamic){
@@ -55,7 +69,34 @@ public final class RelayDirectory {
         if(nodes.containsKey(c.id())||nodes.values().stream().anyMatch(n->n.config().relayURL().equals(c.relayURL())||n.secret().equals(secret)))
             throw new IllegalArgumentException("duplicate relay ID, endpoint or credential");
         nodes.put(c.id(),new Node(c,secret,legacy));
+        generations.put(c.id(),++nextGeneration);
     }
+    // Validate a complete replacement directory outside the room-authority lock,
+    // then apply it atomically. Preserve live state for unchanged endpoints/keys.
+    boolean reload(RelayDirectory replacement){
+        if(!dynamic||!replacement.dynamic)throw new IllegalArgumentException("not a dynamic directory");
+        if(nodes.equals(replacement.nodes))return false;
+        for(String id:new ArrayList<>(nodes.keySet())){
+            if(!replacement.nodes.containsKey(id)){
+                live.remove(id);generations.remove(id);
+            }
+        }
+        for(var entry:replacement.nodes.entrySet()){
+            String id=entry.getKey();Node next=entry.getValue(),old=nodes.get(id);
+            if(old==null||!sameRoute(old,next)){
+                live.remove(id);
+                generations.put(id,++nextGeneration);
+            }
+        }
+        nodes.clear();nodes.putAll(replacement.nodes);
+        samples.clear();
+        return true;
+    }
+    private boolean sameRoute(Node a,Node b){
+        return a.secret().equals(b.secret())&&a.config().relayURL().equals(b.config().relayURL())
+                &&Objects.equals(a.config().stunURL(),b.config().stunURL());
+    }
+    long generation(String id){return generations.getOrDefault(id,0L);}
     boolean empty(){return nodes.isEmpty();}
     boolean authenticated(String id,String secret){
         Node n=id==null?null:nodes.get(id);
@@ -65,10 +106,48 @@ public final class RelayDirectory {
         if(!dynamic||h==null||!authenticated(h.node(),secret)||h.instance()==null||
                 !h.instance().matches("[a-f0-9]{32}")||h.stats()==null||h.stats().connections()<0||
                 h.stats().connections()>256||h.stats().ingress_bytes()<0||h.stats().egress_bytes()<0||h.stats().dropped_packets()<0)return null;
-        live.put(h.node(),new Live(h.instance(),now,h.draining(),h.stats()));
+        Live previous=live.put(h.node(),new Live(h.instance(),now,h.draining(),h.stats()));
+        recordHistory(h,previous,now);
         Config c=nodes.get(h.node()).config();
         return new Limits(c.maxConnections(),c.bytesPerSecond());
     }
+    private void recordHistory(Heartbeat h,Live previous,long now){
+        long minute=Math.floorDiv(now,60)*60;
+        Stats stats=h.stats();
+        boolean continuous=previous!=null&&previous.instance().equals(h.instance())&&previous.seen()+TTL>now
+                &&stats.ingress_bytes()>=previous.stats().ingress_bytes()
+                &&stats.egress_bytes()>=previous.stats().egress_bytes()
+                &&stats.dropped_packets()>=previous.stats().dropped_packets();
+        long in=continuous?stats.ingress_bytes()-previous.stats().ingress_bytes():0;
+        long out=continuous?stats.egress_bytes()-previous.stats().egress_bytes():0;
+        long dropped=continuous?stats.dropped_packets()-previous.stats().dropped_packets():0;
+        var series=history.computeIfAbsent(h.node(),ignored->new TreeMap<>());
+        var old=series.getOrDefault(minute,new Minute(minute,0,0,0,0,0,0));
+        series.put(minute,new Minute(minute,Math.max(old.peakConnections(),stats.connections()),
+                saturatedAdd(old.ingressBytes(),in),saturatedAdd(old.egressBytes(),out),saturatedAdd(old.droppedPackets(),dropped),
+                old.samples()+1,old.discontinuities()+(continuous?0:1)));
+        pruneHistory(now);
+    }
+    private static long saturatedAdd(long a,long b){return Long.MAX_VALUE-a<b?Long.MAX_VALUE:a+b;}
+    private void pruneHistory(long now){
+        long minute=Math.floorDiv(now,60)*60;
+        if(minute==lastHistoryPrune)return;
+        lastHistoryPrune=minute;
+        long oldest=minute-(retentionMinutes-1L)*60;
+        var iterator=history.entrySet().iterator();
+        while(iterator.hasNext()){
+            var entry=iterator.next();
+            entry.getValue().headMap(oldest,false).clear();
+            if(entry.getValue().isEmpty()&&!nodes.containsKey(entry.getKey()))iterator.remove();
+        }
+    }
+    History history(String node,long now){
+        if(!nodes.containsKey(node))throw new IllegalArgumentException("unknown relay node");
+        pruneHistory(now);
+        var values=history.get(node);
+        return new History(node,retentionMinutes,values==null?List.of():List.copyOf(values.values()));
+    }
+
     private boolean healthy(Node n,long now){
         Live l=live.get(n.config().id());
         return n.legacy()||l!=null&&l.seen()+TTL>now&&!l.draining();
@@ -93,16 +172,15 @@ public final class RelayDirectory {
     }
     void report(String session,Map<String,Integer> metrics,long now){
         if(!dynamic||metrics==null||metrics.isEmpty())return;
-        if(metrics.size()>nodes.size())throw new IllegalArgumentException("invalid relay probe report");
         Map<String,Integer> copy=new HashMap<>();
         for(var entry:metrics.entrySet()){
-            if(!nodes.containsKey(entry.getKey())||entry.getValue()==null||entry.getValue() < -1||entry.getValue()>5000)
+            if(entry.getKey()==null||entry.getValue()==null||entry.getValue() < -1||entry.getValue()>5000)
                 throw new IllegalArgumentException("invalid relay probe measurement");
-            copy.put(entry.getKey(),entry.getValue());
+            if(nodes.containsKey(entry.getKey()))copy.put(entry.getKey(),entry.getValue());
         }
         samples.put(session,new Sample(now,Map.copyOf(copy)));
     }
-    void prune(long now){samples.values().removeIf(s->s.seen()+PROBE_TTL<=now);}
+    void prune(long now){samples.values().removeIf(s->s.seen()+PROBE_TTL<=now);pruneHistory(now);}
     private Double score(Node n,List<String> sessions,long now){
         if(sessions.isEmpty())return null;
         double total=0,worst=0;

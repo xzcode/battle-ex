@@ -8,3 +8,5 @@ apps/desktop/src-tauri/target/
 
 agent/bin/
 apps/desktop/src-tauri/binaries/
+
+__pycache__/

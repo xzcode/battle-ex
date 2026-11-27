@@ -1,5 +1,7 @@
 # M3.1–M3.5, M3.9 first slice: regional relay directory
 
+Historical baseline: the later [M3 transport refresh and monitoring](M3_PATH_REFRESH_AND_MONITOR.md) replaces the restart-only directory and full-interface recreation behavior for unchanged peer topology.
+
 2026-11-27. Battle EX control plane remains Java 21 / Spring Boot WebFlux / Reactor Netty. The Go agent and relay continue using the pinned Network Core EX candidate; no fork of its packet engine. This is a development baseline, not a production deployment.
 
 ## Architecture and configuration

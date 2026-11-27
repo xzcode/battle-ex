@@ -45,17 +45,21 @@ type Status struct {
 	IP              string            `json:"ip,omitempty"`
 	RelayNode       string            `json:"relayNode,omitempty"`
 	RelayRegion     string            `json:"relayRegion,omitempty"`
+	PathUpdates     int               `json:"pathUpdates"`
 	ExpiresAt       int64             `json:"expiresAt,omitempty"`
 	Peers           []PeerStatus      `json:"peers"`
 	RelayCandidates []CandidateStatus `json:"relayCandidates,omitempty"`
 	Error           string            `json:"error,omitempty"`
 }
 type active struct {
-	s      Snapshot
-	dir    string
-	cancel context.CancelFunc
-	done   chan error
-	probes *probes
+	s           Snapshot
+	dir         string
+	cancel      context.CancelFunc
+	done        chan error
+	probes      *probes
+	updates     chan engine.PathUpdate
+	paths       []engine.Peer
+	pathUpdates int
 }
 type pollResult struct {
 	s *Snapshot
@@ -178,6 +182,14 @@ func Run(ctx context.Context, creds Credentials, o Options, report func(Status))
 				a.s = *s
 				continue
 			}
+			if a != nil && s.Revision > a.s.Revision && sameMembership(a.s, *s) {
+				if err := refreshPaths(ctx, a, *s, o); err == nil {
+					report(status(a, "connecting", "", c.relayProbes.measurements()))
+					continue
+				} else {
+					report(Status{State: "connecting", Error: "transport refresh failed; rebuilding authorized tunnel"})
+				}
+			}
 			stop()
 			if ctx.Err() != nil {
 				return nil
@@ -208,6 +220,72 @@ func Run(ctx context.Context, creds Credentials, o Options, report func(Status))
 func sameTopology(a, b Snapshot) bool {
 	return a.RoomID == b.RoomID && a.NetworkID == b.NetworkID && a.Revision == b.Revision && a.LocalIP == b.LocalIP && a.IdentityKey == b.IdentityKey && a.WireguardKey == b.WireguardKey && a.RelayNode == b.RelayNode && a.RelayURL == b.RelayURL && a.StunURL == b.StunURL && a.ICE == b.ICE && reflect.DeepEqual(a.Peers, b.Peers)
 }
+
+// A signed revision may update relay leases or node selection without
+// changing the room membership, keys or routes. Any peer change is handled by
+// the original fail-closed teardown path.
+func sameMembership(a, b Snapshot) bool {
+	if a.RoomID != b.RoomID || a.NetworkID != b.NetworkID || a.LocalIP != b.LocalIP ||
+		a.IdentityKey != b.IdentityKey || a.WireguardKey != b.WireguardKey || len(a.Peers) != len(b.Peers) {
+		return false
+	}
+	for i, x := range a.Peers {
+		y := b.Peers[i]
+		x.Lease = ""
+		y.Lease = ""
+		if !reflect.DeepEqual(x, y) {
+			return false
+		}
+	}
+	return true
+}
+
+func makePaths(dir string, s Snapshot, o Options) ([]engine.Peer, error) {
+	var result []engine.Peer
+	for i, p := range s.Peers {
+		f := filepath.Join(dir, fmt.Sprintf("lease-%d-%d", s.Revision, i))
+		if e := os.WriteFile(f, []byte(p.Lease+"\n"), 0600); e != nil {
+			return nil, e
+		}
+		result = append(result, engine.Peer{IP: p.IP, PublicKey: p.WireguardKey, RelayURL: s.RelayURL, RelayTokenFile: f, RelayCA: o.RelayCA, ICE: s.ICE, STUNURL: s.StunURL, ICEInterfaces: o.ICEInterfaces})
+	}
+	return result, nil
+}
+
+func refreshPaths(ctx context.Context, a *active, s Snapshot, o Options) error {
+	deadline := time.Unix(min(a.s.ValidUntil, s.ValidUntil), 0)
+	if !deadline.After(time.Now()) {
+		return errors.New("authorization expired before refresh")
+	}
+	paths, e := makePaths(a.dir, s, o)
+	if e != nil {
+		return e
+	}
+	updateCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	result := make(chan error, 1)
+	change := engine.PathUpdate{Peers: paths, Deadline: deadline, Result: result}
+	select {
+	case a.updates <- change:
+	case <-updateCtx.Done():
+		return updateCtx.Err()
+	}
+	select {
+	case e = <-result:
+		if e != nil {
+			return e
+		}
+	case <-updateCtx.Done():
+		return updateCtx.Err()
+	}
+	for _, p := range a.paths {
+		_ = os.Remove(p.RelayTokenFile)
+	}
+	a.paths = paths
+	a.s = s
+	a.pathUpdates++
+	return nil
+}
 func start(ctx context.Context, s Snapshot, o Options) (*active, error) {
 	dir, e := os.MkdirTemp(o.StateDir, "run-")
 	if e != nil {
@@ -234,25 +312,23 @@ func start(ctx context.Context, s Snapshot, o Options) (*active, error) {
 		port = 51821
 	}
 	cfg := engine.Config{Interface: iface, IP: s.LocalIP, ListenPort: port, WGKeyFile: filepath.Join(o.StateDir, "wireguard.key"), IdentityKeyFile: filepath.Join(o.StateDir, "identity.key"), StatusFile: filepath.Join(dir, "status.json")}
-	for i, p := range s.Peers {
-		f := filepath.Join(dir, fmt.Sprintf("lease-%d", i))
-		if e = os.WriteFile(f, []byte(p.Lease+"\n"), 0600); e != nil {
-			return nil, e
-		}
-		cfg.Peers = append(cfg.Peers, engine.Peer{IP: p.IP, PublicKey: p.WireguardKey, RelayURL: s.RelayURL, RelayTokenFile: f, RelayCA: o.RelayCA, ICE: s.ICE, STUNURL: s.StunURL, ICEInterfaces: o.ICEInterfaces})
+	cfg.Peers, e = makePaths(dir, s, o)
+	if e != nil {
+		return nil, e
 	}
+
 	if e = engine.Check(cfg); e != nil {
 		return nil, e
 	}
 	runCtx, cancel := context.WithCancel(ctx)
-	a := &active{s: s, dir: dir, cancel: cancel, done: make(chan error, 1), probes: &probes{}}
-	go func() { a.done <- engine.Run(runCtx, cfg) }()
+	a := &active{s: s, dir: dir, cancel: cancel, done: make(chan error, 1), probes: &probes{}, updates: make(chan engine.PathUpdate), paths: cfg.Peers}
+	go func() { a.done <- engine.RunWithUpdates(runCtx, cfg, a.updates) }()
 	go a.probes.run(runCtx, s)
 	cleanup = false
 	return a, nil
 }
 func status(a *active, fallback, errText string, measurements map[string]int) Status {
-	result := Status{State: fallback, RoomID: a.s.RoomID, NetworkID: a.s.NetworkID, Revision: a.s.Revision, IP: a.s.LocalIP, RelayNode: a.s.RelayNode, RelayRegion: a.s.RelayRegion, ExpiresAt: a.s.ValidUntil, Peers: []PeerStatus{}, Error: errText}
+	result := Status{State: fallback, RoomID: a.s.RoomID, NetworkID: a.s.NetworkID, Revision: a.s.Revision, IP: a.s.LocalIP, RelayNode: a.s.RelayNode, RelayRegion: a.s.RelayRegion, PathUpdates: a.pathUpdates, ExpiresAt: a.s.ValidUntil, Peers: []PeerStatus{}, Error: errText}
 	for _, candidate := range a.s.RelayCandidates {
 		var probe *int
 		if v, ok := measurements[candidate.ID]; ok {

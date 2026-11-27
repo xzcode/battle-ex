@@ -5,6 +5,9 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -35,13 +38,18 @@ public final class NetworkAuthority {
     private static final HexFormat HEX = HexFormat.of();
     private static final Base64.Encoder B64 = Base64.getUrlEncoder().withoutPadding();
     private static final int POOL = 4096; // 10.160.0.0/12, /24 per active room.
-    private static final long HEARTBEAT_SECONDS = 15, SNAPSHOT_SECONDS = 12, LEASE_SECONDS = 840;
+    private static final long HEARTBEAT_SECONDS = 15, SNAPSHOT_SECONDS = 12, MAX_LEASE_SECONDS = 840;
+    private static final Logger LOG=LoggerFactory.getLogger(NetworkAuthority.class);
     private final Platform platform;
     private final ObjectMapper json;
     private final PrivateKey signer;
     private final String issuer;
     private final RelayDirectory relays;
     private final boolean ice;
+    private final String directoryFile;
+    private final int retentionMinutes;
+    private final long leaseSeconds;
+    private boolean reloadRejected;
     private final Map<UUID,Device> devices = new HashMap<>();
     private final Map<UUID,RoomState> networks = new HashMap<>();
     private final Map<Integer,Long> quarantine = new HashMap<>();
@@ -55,9 +63,13 @@ public final class NetworkAuthority {
             @Value("${battle.network.stun-url:}") String stunURL,
             @Value("${battle.network.ice:true}") boolean ice,
             @Value("${battle.network.relay-secret-file:}") String secretFile,
-            @Value("${battle.network.relay-directory-file:}") String directoryFile) throws Exception {
+            @Value("${battle.network.relay-directory-file:}") String directoryFile,
+            @Value("${battle.network.lease-seconds:840}") long leaseSeconds,
+            @Value("${battle.network.metrics-retention-minutes:1440}") int retentionMinutes) throws Exception {
         this.platform=platform; this.json=json; this.ice=ice;
-        relays=new RelayDirectory(json,directoryFile,ice,node,relayURL,stunURL,secretFile);
+        if(leaseSeconds<30||leaseSeconds>MAX_LEASE_SECONDS)throw new IllegalArgumentException("lease seconds must be 30–840");
+        this.leaseSeconds=leaseSeconds;this.directoryFile=directoryFile;this.retentionMinutes=retentionMinutes;
+        relays=new RelayDirectory(json,directoryFile,ice,node,relayURL,stunURL,secretFile,retentionMinutes);
         if(keyFile.isBlank()) {
             if(!relays.empty()) throw new IllegalArgumentException("network issuer required");
             signer=null; issuer=""; return;
@@ -73,6 +85,23 @@ public final class NetworkAuthority {
         byte[] probe="battle-ex/key-check".getBytes(StandardCharsets.UTF_8);
         if(!verify(issuer,probe,sign(new byte[0],probe)))throw new IllegalArgumentException("issuer key mismatch");
         Arrays.fill(raw,(byte)0);Arrays.fill(encoded,(byte)0);
+    }
+    // File I/O and validation execute on Spring's scheduling thread, not a
+    // Reactor Netty thread and not under the synchronized platform lock.
+    @Scheduled(fixedDelay=3000)
+    public void reloadRelayDirectory(){
+        if(directoryFile.isBlank()||!enabled())return;
+        try{
+            var replacement=new RelayDirectory(json,directoryFile,ice,"","","","",retentionMinutes);
+            synchronized(platform){
+                if(relays.reload(replacement))LOG.info("Applied updated relay directory");
+            }
+            if(reloadRejected)LOG.info("Relay directory configuration recovered");
+            reloadRejected=false;
+        }catch(Exception e){
+            if(!reloadRejected)LOG.warn("Rejected invalid relay directory update; retaining last valid configuration");
+            reloadRejected=true;
+        }
     }
     public boolean enabled(){return signer!=null;}
     public String issuer(){return issuer;}
@@ -161,6 +190,9 @@ public final class NetworkAuthority {
     public List<RelayDirectory.PublicStatus> relayStatus(String token){
         synchronized(platform){platform.authenticate(token);return relays.status(Instant.now().getEpochSecond());}
     }
+    public RelayDirectory.History relayHistory(String token,String node){
+        synchronized(platform){platform.authenticate(token);return relays.history(node,Instant.now().getEpochSecond());}
+    }
     public static final class NoRelay extends RuntimeException {public NoRelay(){super("no healthy relay node available");}}
     public static final class NoRoom extends RuntimeException {public NoRoom(){super("not in a room");}}
     private List<Device> activeDevices(com.battleex.room.RoomDirectory.RoomView room,long now){
@@ -176,8 +208,8 @@ public final class NetworkAuthority {
                 room.state()==com.battleex.room.RoomDirectory.State.WAITING,now);
         if(selected==null)throw new NoRelay();
         long changedAt=old==null||!selected.equals(old.relayNode())?now:old.changedAt();
-        String fingerprint=selected+":"+room.membershipRevision()+":"+String.join(",",active.stream().map(d->d.userId()+":"+d.session()+":"+d.identity()+":"+d.wireguard()).toList());
-        if(old!=null&&old.fingerprint().equals(fingerprint)&&old.leaseExpiry()>now+20)return old;
+        String fingerprint=selected+":"+relays.generation(selected)+":"+room.membershipRevision()+":"+String.join(",",active.stream().map(d->d.userId()+":"+d.session()+":"+d.identity()+":"+d.wireguard()).toList());
+        if(old!=null&&old.fingerprint().equals(fingerprint)&&old.leaseExpiry()>now+Math.min(20,leaseSeconds/3))return old;
         int subnet=old==null?allocate(now):old.subnet();
         var addresses=new HashMap<UUID,Integer>();
         if(old!=null)for(var m:room.members()){
@@ -189,7 +221,7 @@ public final class NetworkAuthority {
             addresses.put(m.userId(),host);
         }
         long revision=revisions.merge(room.networkId(),1L,Long::sum);
-        var next=new RoomState(subnet,fingerprint,revision,now+LEASE_SECONDS,Map.copyOf(addresses),selected,changedAt);
+        var next=new RoomState(subnet,fingerprint,revision,now+leaseSeconds,Map.copyOf(addresses),selected,changedAt);
         networks.put(room.networkId(),next);
         return next;
     }
@@ -207,7 +239,7 @@ public final class NetworkAuthority {
         while(it.hasNext()){
             var entry=it.next();
             if(platform.roomByNetwork(entry.getKey())==null){
-                quarantine.put(entry.getValue().subnet(),now+LEASE_SECONDS);
+                quarantine.put(entry.getValue().subnet(),now+MAX_LEASE_SECONDS);
                 revisions.remove(entry.getKey());it.remove();
             }
         }

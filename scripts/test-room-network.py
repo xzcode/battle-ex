@@ -7,9 +7,10 @@ P = argparse.ArgumentParser()
 P.add_argument("--inside", action="store_true")
 P.add_argument("--ice", action="store_true")
 P.add_argument("--multi", action="store_true")
+P.add_argument("--refresh", action="store_true")
 args = P.parse_args()
 if not args.inside:
-    os.execvp("unshare", ["unshare","--net","--",sys.executable,__file__,"--inside",*(["--ice"] if args.ice else []),*(["--multi"] if args.multi else [])])
+    os.execvp("unshare", ["unshare","--net","--",sys.executable,__file__,"--inside",*(["--ice"] if args.ice else []),*(["--multi"] if args.multi else []),*(["--refresh"] if args.refresh else [])])
 # This script never creates routes or listeners in the host network namespace.
 assert os.readlink("/proc/self/ns/net") != os.readlink("/proc/1/ns/net"), "isolated namespace required"
 procs = []
@@ -68,6 +69,9 @@ class Agent:
         if self.proc.stdin and not self.proc.stdin.closed:self.proc.stdin.close()
         try:self.proc.wait(8)
         except subprocess.TimeoutExpired:raise AssertionError("agent failed graceful pipe shutdown: "+self.name)
+    def ifindex(self):
+        out=cmd(*self.ns,"ip","-j","link","show","battle0",capture_output=True,text=True)
+        return json.loads(out.stdout)[0]["ifindex"]
     def no_interface(self):
         return cmd(*self.ns,"ip","link","show","battle0",check=False,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode!=0
 
@@ -98,6 +102,7 @@ try:
              "BATTLE_NETWORK_ISSUER_KEY_FILE":str(d/"issuer.key"),"BATTLE_NETWORK_RELAY_SECRET_FILE":str(d/"relay.secret"),
              "BATTLE_NETWORK_RELAY_NODE":"battle-relay","BATTLE_NETWORK_RELAY_URL":RELAY,"BATTLE_NETWORK_ICE":str(args.ice).lower(),
              "BATTLE_NETWORK_STUN_URL":"stun:192.0.2.1:3478"}
+        if args.refresh:env["BATTLE_NETWORK_LEASE_SECONDS"]="35"
         if args.multi:
             backup_file=d/"relay2.secret"
             backup_file.write_text(os.urandom(32).hex()+"\n");os.chmod(backup_file,0o600)
@@ -215,24 +220,86 @@ for kind,port in [(socket.SOCK_STREAM,39101),(socket.SOCK_DGRAM,39100)]:
                 initial=a.latest.get("relayNode")
                 assert initial=="battle-relay",initial
                 wait_for(lambda:relay_nodes()["battle-relay"]["stats"]["ingress_bytes"]>0,"reported relay traffic",20)
+                old_indices={ag.name:ag.ifindex() for ag in agents}
                 started=time.monotonic()
                 terminate(relayproc)
                 wait_for(lambda:relay_nodes()["battle-relay"]["state"]=="offline","failed node heartbeat expiry",20)
                 wait_for(lambda:all(ag.latest.get("relayNode")=="battle-relay-2" and ag.latest.get("ip")==ips[ag.name] for ag in agents)
                          and a.ping(ips["b"]) and a.ping(ips["c"]),"failover real traffic same IPs",45)
-                print(f"PASS: automatic relay failover with unchanged virtual IPs and live traffic ({time.monotonic()-started:.1f}s)",flush=True)
+                assert all(ag.ifindex()==old_indices[ag.name] for ag in agents),"failover recreated virtual adapter"
+                assert all(ag.latest.get("pathUpdates",0)>0 for ag in agents),"hot path update not used"
+                print(f"PASS: automatic relay failover retained native adapters and virtual IPs ({time.monotonic()-started:.1f}s)",flush=True)
                 relayproc=launch_relay()
                 wait_for(lambda:relay_nodes()["battle-relay"]["state"]=="online","re-register restarted node",20)
                 (d/"relay2.drain").touch()
                 wait_for(lambda:relay_nodes()["battle-relay-2"]["state"]=="draining","maintenance heartbeat",20)
                 wait_for(lambda:all(ag.latest.get("relayNode")=="battle-relay" and ag.latest.get("ip")==ips[ag.name] for ag in agents)
                          and a.ping(ips["b"]) and a.ping(ips["c"]),"maintenance migration real traffic",45)
-                print("PASS: node re-registration and maintenance migration",flush=True)
+                assert all(ag.ifindex()==old_indices[ag.name] for ag in agents),"maintenance recreated virtual adapter"
+                print("PASS: node re-registration and maintenance migration preserved adapters",flush=True)
+                history=api("/network/relays/battle-relay/history",tokens["a"])
+                assert history["minutes"] and any(m["ingressBytes"]>0 for m in history["minutes"])
+                # Remove the drained backup through the administrator's local
+                # configuration; update occurs without restarting the authority.
+                current_config=json.loads(relay_directory.read_text())
+                temp_config=relay_directory.with_suffix(".new")
+                temp_config.write_text(json.dumps([current_config[0]]))
+                temp_config.replace(relay_directory)
+                wait_for(lambda:set(relay_nodes())=={"battle-relay"},"live directory removal",20)
+                assert a.ping(ips["c"])
+                temp_config.write_text("invalid json");temp_config.replace(relay_directory)
+                time.sleep(4)
+                assert set(relay_nodes())=={"battle-relay"},"invalid update replaced valid directory"
+                temp_config.write_text(json.dumps(current_config));temp_config.replace(relay_directory)
+                wait_for(lambda:"battle-relay-2" in relay_nodes(),"live directory addition",20)
+                assert a.ping(ips["c"])
+                print("PASS: real telemetry history and atomic directory reload with invalid-update rollback",flush=True)
                 v=api("/network/snapshot",tokens["a"],{"nonce":os.urandom(32).hex()})["payload"]
                 payload=json.loads(base64.urlsafe_b64decode(v+"="*((4-len(v)%4)%4)))
                 lease_json=next(p["lease"] for p in payload["peers"] if p["ip"]==ips["c"]).split(".")[0]
                 lease=json.loads(base64.urlsafe_b64decode(lease_json+"="*((4-len(lease_json)%4)%4)))
                 api("/network/relay/authorize",body=lease,relay_secret=secret,status=204)
+
+            # A long-lived TCP connection is established before the tested path-only
+            # refresh. Both its socket and the native adapter must survive.
+            if args.refresh:
+                persistent_server="""import socket,sys
+listener=socket.socket();listener.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+listener.bind((sys.argv[1],39103));listener.listen(1)
+print("ready",flush=True)
+s,_=listener.accept()
+while True:
+    buf=s.recv(1024)
+    if not buf:break
+    s.sendall(buf)
+"""
+                persistent_client="""import socket,sys
+s=socket.create_connection((sys.argv[1],39103),timeout=10)
+s.settimeout(30)
+s.sendall(b"first");assert s.recv(5)==b"first"
+print("ready",flush=True)
+assert sys.stdin.readline()
+s.sendall(b"again");assert s.recv(5)==b"again"
+print("same socket passed",flush=True)
+"""
+                listener=spawn(ns["c"]+[sys.executable,"-u","-c",persistent_server,ips["c"]],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True)
+                assert listener.stdout.readline().strip()=="ready"
+                client=spawn(ns["a"]+[sys.executable,"-u","-c",persistent_client,ips["c"]],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True)
+                assert client.stdout.readline().strip()=="ready"
+                prior={ag.name:(ag.ifindex(),ag.latest.get("pathUpdates",0)) for ag in agents}
+                wait_for(lambda:a.latest.get("pathUpdates",0)>prior["a"][1] and c.latest.get("pathUpdates",0)>prior["c"][1]
+                         and a.ping(ips["c"]),"live lease renewal",60)
+                assert a.ifindex()==prior["a"][0] and c.ifindex()==prior["c"][0],"adapter was recreated"
+                client.stdin.write("continue\n");client.stdin.flush()
+                assert client.stdout.readline().strip()=="same socket passed"
+                assert client.wait(5)==0
+                terminate(listener)
+                print("PASS: lease renewal preserved adapter indices and existing TCP connection",flush=True)
+                # Fetch the current grant; the preceding renewal invalidated the old one.
+                v=api("/network/snapshot",tokens["a"],{"nonce":os.urandom(32).hex()})["payload"]
+                payload=json.loads(base64.urlsafe_b64decode(v+"="*((4-len(v)%4)%4)))
+                lease_json=next(p["lease"] for p in payload["peers"] if p["ip"]==ips["c"]).split(".")[0]
+                lease=json.loads(base64.urlsafe_b64decode(lease_json+"="*((4-len(lease_json)%4)%4)))
 
             # Departing client must lose old virtual interface and peers must revoke it.
             api("/rooms/"+r1["id"]+"/leave",tokens["c"],{},status=204)

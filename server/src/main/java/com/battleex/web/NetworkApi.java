@@ -61,6 +61,11 @@ public final class NetworkApi {
     Mono<List<RelayDirectory.PublicStatus>> relays(@RequestHeader(value="Authorization",required=false)String auth) {
         return work.state(() -> authority.relayStatus(Api.bearer(auth)));
     }
+    @GetMapping("/relays/{node}/history")
+    Mono<RelayDirectory.History> relayHistory(@RequestHeader(value="Authorization",required=false)String auth,
+                                              @PathVariable String node) {
+        return work.state(() -> authority.relayHistory(Api.bearer(auth),node));
+    }
     @PostMapping("/relay/authorize")
     Mono<ResponseEntity<Void>> authorize(@RequestHeader(value="X-Relay-Secret",required=false)String secret,
              @RequestBody NetworkAuthority.Lease lease) {

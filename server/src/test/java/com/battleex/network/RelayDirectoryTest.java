@@ -55,4 +55,23 @@ final class RelayDirectoryTest {
         d.heartbeat(a,heartbeat("a",false,256),102);d.heartbeat(b,heartbeat("b",false,0),102);
         assertEquals("b",d.select(null,0,List.of("unmeasured"),true,102),"new room avoids full node");
     }
+
+    @Test void historyTracksObservedDeltasAndDiscontinuities()throws Exception{
+        RelayDirectory d=directory();
+        d.heartbeat(a,new RelayDirectory.Heartbeat("a",instance,false,new RelayDirectory.Stats(1,100,200,1)),120);
+        d.heartbeat(a,new RelayDirectory.Heartbeat("a",instance,false,new RelayDirectory.Stats(5,140,260,3)),122);
+        var row=d.history("a",123).minutes().getFirst();
+        assertEquals(5,row.peakConnections());
+        assertEquals(40,row.ingressBytes());
+        assertEquals(60,row.egressBytes());
+        assertEquals(2,row.droppedPackets());
+        assertEquals(2,row.samples());
+        assertEquals(1,row.discontinuities());
+        String nextInstance=UUID.randomUUID().toString().replace("-","");
+        d.heartbeat(a,new RelayDirectory.Heartbeat("a",nextInstance,false,new RelayDirectory.Stats(2,8,10,0)),124);
+        row=d.history("a",125).minutes().getFirst();
+        assertEquals(40,row.ingressBytes(),"restart counters must not double-count");
+        assertEquals(2,row.discontinuities());
+        assertTrue(d.history("a",120+1440L*60).minutes().isEmpty());
+    }
 }

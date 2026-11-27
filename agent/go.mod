@@ -3,7 +3,7 @@ module github.com/xzcode/battle-ex/agent
 go 1.26.11
 
 require (
-	github.com/xzcode/network-core-ex v0.0.0-20261127080738-9941a2f9255f
+	github.com/xzcode/network-core-ex v0.0.0-20261127090744-0c5a014ae732
 	golang.org/x/crypto v0.59.0
 	golang.org/x/sys v0.50.0
 )
