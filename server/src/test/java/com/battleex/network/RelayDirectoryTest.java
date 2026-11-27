@@ -14,11 +14,19 @@ final class RelayDirectoryTest {
     private final String b=UUID.randomUUID().toString().replace("-","")+UUID.randomUUID().toString().replace("-","");
     private final String instance=UUID.randomUUID().toString().replace("-","");
 
+    // Test fixtures must use permissions supported by the host filesystem.
+    // POSIX hosts still create private files atomically; Windows uses its
+    // normal temporary-directory ACL. These are random, disposable test values.
+    private static void createSecretFixture(Path path)throws Exception{
+        if(Files.getFileStore(path.getParent()).supportsFileAttributeView("posix"))
+            Files.createFile(path,PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")));
+        else Files.createFile(path);
+    }
+
     private RelayDirectory directory() throws Exception {
         ObjectMapper json=new ObjectMapper();
         Path sa=dir.resolve("a.secret"),sb=dir.resolve("b.secret");
-        Files.createFile(sa,PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")));
-        Files.createFile(sb,PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")));
+        createSecretFixture(sa);createSecretFixture(sb);
         Files.writeString(sa,a);Files.writeString(sb,b);
         Path config=dir.resolve("nodes.json");
         json.writeValue(config.toFile(),List.of(
