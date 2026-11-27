@@ -33,10 +33,10 @@ def legacy_powershell_env(env=None):
     # Actions runs pwsh 7; its PSModulePath can make Windows PowerShell 5.1
     # import incompatible PowerShell Core modules. Use the native 5.1 path
     # for fixture provisioning and the actual installer.
-    clean = dict(os.environ if env is None else env)
-    clean["PSModulePath"] = os.pathsep.join([
+    clean = {key.upper(): value for key, value in (os.environ if env is None else env).items()}
+    clean["PSMODULEPATH"] = os.pathsep.join([
         str(PS.parent / "Modules"),
-        str(Path(clean["ProgramFiles"]) / "WindowsPowerShell/Modules"),
+        str(Path(clean["PROGRAMFILES"]) / "WindowsPowerShell/Modules"),
     ])
     return clean
 
