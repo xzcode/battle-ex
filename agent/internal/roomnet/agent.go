@@ -28,16 +28,27 @@ type PeerStatus struct {
 	TxBytes        string   `json:"txBytes"`
 	RTTMillis      *float64 `json:"rttMillis"`
 	RelayConnected bool     `json:"relayConnected"`
+	JitterMillis   *float64 `json:"jitterMillis"`
+	ProbeLossPct   *float64 `json:"probeLossPct"`
+	ProbeSamples   int      `json:"probeSamples"`
+}
+type CandidateStatus struct {
+	ID          string `json:"id"`
+	Region      string `json:"region"`
+	ProbeMillis *int   `json:"probeMillis"`
 }
 type Status struct {
-	State     string       `json:"state"`
-	RoomID    string       `json:"roomId,omitempty"`
-	NetworkID string       `json:"networkId,omitempty"`
-	Revision  int64        `json:"revision,omitempty"`
-	IP        string       `json:"ip,omitempty"`
-	ExpiresAt int64        `json:"expiresAt,omitempty"`
-	Peers     []PeerStatus `json:"peers"`
-	Error     string       `json:"error,omitempty"`
+	State           string            `json:"state"`
+	RoomID          string            `json:"roomId,omitempty"`
+	NetworkID       string            `json:"networkId,omitempty"`
+	Revision        int64             `json:"revision,omitempty"`
+	IP              string            `json:"ip,omitempty"`
+	RelayNode       string            `json:"relayNode,omitempty"`
+	RelayRegion     string            `json:"relayRegion,omitempty"`
+	ExpiresAt       int64             `json:"expiresAt,omitempty"`
+	Peers           []PeerStatus      `json:"peers"`
+	RelayCandidates []CandidateStatus `json:"relayCandidates,omitempty"`
+	Error           string            `json:"error,omitempty"`
 }
 type active struct {
 	s      Snapshot
@@ -75,6 +86,12 @@ func Run(ctx context.Context, creds Credentials, o Options, report func(Status))
 	defer c.Disconnect()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	relayHTTP, e := HTTPClient(o.RelayCA, 2*time.Second)
+	if e != nil {
+		return e
+	}
+	c.relayProbes = &relayProbes{http: relayHTTP}
+	go c.relayProbes.run(ctx)
 	results := make(chan pollResult, 1)
 	go func() {
 		for ctx.Err() == nil {
@@ -174,7 +191,7 @@ func Run(ctx context.Context, creds Credentials, o Options, report func(Status))
 				a = nil
 				continue
 			}
-			report(status(a, "connecting", ""))
+			report(status(a, "connecting", "", c.relayProbes.measurements()))
 		case <-tick.C:
 			if a != nil && time.Now().Unix() >= a.s.ValidUntil {
 				stop()
@@ -183,7 +200,7 @@ func Run(ctx context.Context, creds Credentials, o Options, report func(Status))
 			}
 			if a != nil && time.Since(lastStatus) >= time.Second {
 				lastStatus = time.Now()
-				report(status(a, "connecting", transient))
+				report(status(a, "connecting", transient, c.relayProbes.measurements()))
 			}
 		}
 	}
@@ -228,14 +245,21 @@ func start(ctx context.Context, s Snapshot, o Options) (*active, error) {
 		return nil, e
 	}
 	runCtx, cancel := context.WithCancel(ctx)
-	a := &active{s: s, dir: dir, cancel: cancel, done: make(chan error, 1), probes: &probes{rtt: map[string]float64{}}}
+	a := &active{s: s, dir: dir, cancel: cancel, done: make(chan error, 1), probes: &probes{}}
 	go func() { a.done <- engine.Run(runCtx, cfg) }()
 	go a.probes.run(runCtx, s)
 	cleanup = false
 	return a, nil
 }
-func status(a *active, fallback, errText string) Status {
-	result := Status{State: fallback, RoomID: a.s.RoomID, NetworkID: a.s.NetworkID, Revision: a.s.Revision, IP: a.s.LocalIP, ExpiresAt: a.s.ValidUntil, Peers: []PeerStatus{}, Error: errText}
+func status(a *active, fallback, errText string, measurements map[string]int) Status {
+	result := Status{State: fallback, RoomID: a.s.RoomID, NetworkID: a.s.NetworkID, Revision: a.s.Revision, IP: a.s.LocalIP, RelayNode: a.s.RelayNode, RelayRegion: a.s.RelayRegion, ExpiresAt: a.s.ValidUntil, Peers: []PeerStatus{}, Error: errText}
+	for _, candidate := range a.s.RelayCandidates {
+		var probe *int
+		if v, ok := measurements[candidate.ID]; ok {
+			probe = &v
+		}
+		result.RelayCandidates = append(result.RelayCandidates, CandidateStatus{ID: candidate.ID, Region: candidate.Region, ProbeMillis: probe})
+	}
 	b, e := os.ReadFile(filepath.Join(a.dir, "status.json"))
 	if e != nil {
 		return result
@@ -253,7 +277,8 @@ func status(a *active, fallback, errText string) Status {
 				break
 			}
 		}
-		result.Peers = append(result.Peers, PeerStatus{user, p.IP, p.Mode, p.HandshakeUnix, p.RxBytes, p.TxBytes, a.probes.get(p.IP), p.RelayConnected})
+		q := a.probes.get(p.IP)
+		result.Peers = append(result.Peers, PeerStatus{UserID: user, IP: p.IP, Mode: p.Mode, HandshakeUnix: p.HandshakeUnix, RxBytes: p.RxBytes, TxBytes: p.TxBytes, RTTMillis: q.RTT, RelayConnected: p.RelayConnected, JitterMillis: q.Jitter, ProbeLossPct: q.Loss, ProbeSamples: q.Samples})
 	}
 	return result
 }

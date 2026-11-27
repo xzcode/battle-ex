@@ -25,10 +25,11 @@ public final class NetworkAuthority {
     public record Snapshot(int version, UUID roomId, UUID networkId, long revision, long issuedAt,
                            long validUntil, String localIP, String identityKey, String wireguardKey,
                            String relayNode, String relayURL, String stunURL, boolean ice,
-                           List<Peer> peers, String nonce, String sessionDigest) {}
+                           List<Peer> peers, String nonce, String sessionDigest, String relayRegion,
+                           List<RelayDirectory.Candidate> relayCandidates) {}
     private record Device(UUID userId, String session, String identity, String wireguard, long seen) {}
     private record RoomState(int subnet, String fingerprint, long revision, long leaseExpiry,
-                             Map<UUID,Integer> addresses) {}
+                             Map<UUID,Integer> addresses, String relayNode, long changedAt) {}
     private static final byte[] SNAP_DOMAIN = "battle-ex/snapshot/v1\0".getBytes(StandardCharsets.UTF_8);
     private static final byte[] LEASE_DOMAIN = "network-ex/lease/v1\0".getBytes(StandardCharsets.UTF_8);
     private static final HexFormat HEX = HexFormat.of();
@@ -38,7 +39,8 @@ public final class NetworkAuthority {
     private final Platform platform;
     private final ObjectMapper json;
     private final PrivateKey signer;
-    private final String issuer, node, relayURL, stunURL, serviceSecret;
+    private final String issuer;
+    private final RelayDirectory relays;
     private final boolean ice;
     private final Map<UUID,Device> devices = new HashMap<>();
     private final Map<UUID,RoomState> networks = new HashMap<>();
@@ -52,16 +54,15 @@ public final class NetworkAuthority {
             @Value("${battle.network.relay-url:}") String relayURL,
             @Value("${battle.network.stun-url:}") String stunURL,
             @Value("${battle.network.ice:true}") boolean ice,
-            @Value("${battle.network.relay-secret-file:}") String secretFile) throws Exception {
-        this.platform=platform; this.json=json; this.node=node; this.relayURL=relayURL;
-        this.stunURL=ice?stunURL:""; this.ice=ice;
+            @Value("${battle.network.relay-secret-file:}") String secretFile,
+            @Value("${battle.network.relay-directory-file:}") String directoryFile) throws Exception {
+        this.platform=platform; this.json=json; this.ice=ice;
+        relays=new RelayDirectory(json,directoryFile,ice,node,relayURL,stunURL,secretFile);
         if(keyFile.isBlank()) {
-            if(!relayURL.isBlank()||!secretFile.isBlank()) throw new IllegalArgumentException("network issuer required");
-            signer=null; issuer=""; serviceSecret=""; return;
+            if(!relays.empty()) throw new IllegalArgumentException("network issuer required");
+            signer=null; issuer=""; return;
         }
-        if(!node.matches("[A-Za-z0-9_-]{1,64}") || !validURI(relayURL,"wss","/relay/v1")
-                || (ice && !validStun(stunURL)) || secretFile.isBlank())
-            throw new IllegalArgumentException("network requires valid relay node, WSS URL, STUN (when ICE enabled) and relay secret");
+        if(relays.empty())throw new IllegalArgumentException("at least one relay node required");
         byte[] raw=HEX.parseHex(readSecret(keyFile).strip());
         if(raw.length!=64)throw new IllegalArgumentException("issuer key must be 64-byte Ed25519 private key");
         byte[] prefix=HEX.parseHex("302e020100300506032b657004220420");
@@ -72,8 +73,6 @@ public final class NetworkAuthority {
         byte[] probe="battle-ex/key-check".getBytes(StandardCharsets.UTF_8);
         if(!verify(issuer,probe,sign(new byte[0],probe)))throw new IllegalArgumentException("issuer key mismatch");
         Arrays.fill(raw,(byte)0);Arrays.fill(encoded,(byte)0);
-        serviceSecret=readSecret(secretFile).strip();
-        if(!serviceSecret.matches("[a-f0-9]{64}"))throw new IllegalArgumentException("relay secret must be 32-byte hex");
     }
     public boolean enabled(){return signer!=null;}
     public String issuer(){return issuer;}
@@ -100,7 +99,7 @@ public final class NetworkAuthority {
             return new Enrollment(req.identityKey(),req.wireguardKey(),issuer);
         }
     }
-    public SignedSnapshot snapshot(String token,String nonce){
+    public SignedSnapshot snapshot(String token,String nonce,Map<String,Integer> measurements){
         if(nonce==null||!nonce.matches("[a-f0-9]{64}"))throw new IllegalArgumentException("invalid snapshot nonce");
         synchronized(platform){
             requireEnabled(); var ctx=platform.networkContext(token);
@@ -109,6 +108,7 @@ public final class NetworkAuthority {
             if(device==null||!device.session().equals(ctx.sessionDigest()))throw new SecurityException("enroll this device first");
             if(ctx.room()==null)throw new NoRoom();
             devices.put(device.userId(),new Device(device.userId(),device.session(),device.identity(),device.wireguard(),now));
+            relays.report(ctx.sessionDigest(),measurements,now);
             var room=ctx.room();
             var active=activeDevices(room,now);
             RoomState state=state(room,active,now);
@@ -120,9 +120,10 @@ public final class NetworkAuthority {
                 peers.add(new Peer(peer.userId(),ip(state.subnet(),state.addresses().get(peer.userId())),
                         peer.identity(),peer.wireguard(),tokenValue));
             }
+            var selected=relays.config(state.relayNode());
             Snapshot snapshot=new Snapshot(1,room.id(),room.networkId(),state.revision(),now,now+SNAPSHOT_SECONDS,
                     ip(state.subnet(),state.addresses().get(device.userId())),device.identity(),device.wireguard(),
-                    node,relayURL,stunURL,ice,List.copyOf(peers),nonce,ctx.sessionDigest());
+                    selected.id(),selected.relayURL(),ice?selected.stunURL():"",ice,List.copyOf(peers),nonce,ctx.sessionDigest(),selected.region(),relays.candidates(now));
             byte[] payload=bytes(snapshot);
             return new SignedSnapshot(B64.encodeToString(payload),B64.encodeToString(sign(SNAP_DOMAIN,payload)));
         }
@@ -135,23 +136,32 @@ public final class NetworkAuthority {
         }
     }
     public boolean authorize(String secret, Lease requested){
-        if(!enabled()||secret==null||!MessageDigest.isEqual(serviceSecret.getBytes(StandardCharsets.US_ASCII),
-                secret.getBytes(StandardCharsets.US_ASCII))||requested==null)return false;
+        if(!enabled()||requested==null)return false;
         synchronized(platform){
-            long now=Instant.now().getEpochSecond();prune(now);
-            if(!node.equals(requested.node())||requested.expires()<=now)return false;
+            long now=Instant.now().getEpochSecond();
+            if(!relays.authenticated(requested.node(),secret)||requested.expires()<=now)return false;
+            prune(now);
             UUID network;
             try{network=UUID.fromString(requested.network());}catch(Exception e){return false;}
             var room=platform.roomByNetwork(network);
             if(room==null)return false;
             var active=activeDevices(room,now);
             if(active.size()<2)return false;
-            RoomState state=state(room,active,now);
+            RoomState state;
+            try{state=state(room,active,now);}catch(NoRelay e){return false;}
+            if(!state.relayNode().equals(requested.node()))return false;
             Device a=null,b=null;
             for(Device d:active){if(d.identity().equals(requested.a()))a=d;if(d.identity().equals(requested.b()))b=d;}
             return a!=null&&b!=null&&!a.userId().equals(b.userId())&&lease(network,state,a,b).equals(requested);
         }
     }
+    public RelayDirectory.Limits heartbeat(String secret,RelayDirectory.Heartbeat heartbeat){
+        synchronized(platform){return enabled()?relays.heartbeat(secret,heartbeat,Instant.now().getEpochSecond()):null;}
+    }
+    public List<RelayDirectory.PublicStatus> relayStatus(String token){
+        synchronized(platform){platform.authenticate(token);return relays.status(Instant.now().getEpochSecond());}
+    }
+    public static final class NoRelay extends RuntimeException {public NoRelay(){super("no healthy relay node available");}}
     public static final class NoRoom extends RuntimeException {public NoRoom(){super("not in a room");}}
     private List<Device> activeDevices(com.battleex.room.RoomDirectory.RoomView room,long now){
         return room.members().stream().map(m->devices.get(m.userId())).filter(Objects::nonNull)
@@ -161,7 +171,12 @@ public final class NetworkAuthority {
     private RoomState state(com.battleex.room.RoomDirectory.RoomView room,List<Device> active,long now){
         if(active.size()>65)throw new IllegalStateException("current engine supports 64 peers per device");
         var old=networks.get(room.networkId());
-        String fingerprint=room.membershipRevision()+":"+String.join(",",active.stream().map(d->d.userId()+":"+d.session()+":"+d.identity()+":"+d.wireguard()).toList());
+        String selected=relays.select(old==null?null:old.relayNode(),old==null?0:old.changedAt(),
+                active.stream().map(Device::session).toList(),
+                room.state()==com.battleex.room.RoomDirectory.State.WAITING,now);
+        if(selected==null)throw new NoRelay();
+        long changedAt=old==null||!selected.equals(old.relayNode())?now:old.changedAt();
+        String fingerprint=selected+":"+room.membershipRevision()+":"+String.join(",",active.stream().map(d->d.userId()+":"+d.session()+":"+d.identity()+":"+d.wireguard()).toList());
         if(old!=null&&old.fingerprint().equals(fingerprint)&&old.leaseExpiry()>now+20)return old;
         int subnet=old==null?allocate(now):old.subnet();
         var addresses=new HashMap<UUID,Integer>();
@@ -174,7 +189,7 @@ public final class NetworkAuthority {
             addresses.put(m.userId(),host);
         }
         long revision=revisions.merge(room.networkId(),1L,Long::sum);
-        var next=new RoomState(subnet,fingerprint,revision,now+LEASE_SECONDS,Map.copyOf(addresses));
+        var next=new RoomState(subnet,fingerprint,revision,now+LEASE_SECONDS,Map.copyOf(addresses),selected,changedAt);
         networks.put(room.networkId(),next);
         return next;
     }
@@ -182,10 +197,11 @@ public final class NetworkAuthority {
         String first=a.identity().compareTo(b.identity())<0?a.identity():b.identity();
         String second=first.equals(a.identity())?b.identity():a.identity();
         String flow=sha256(network+":"+state.revision()+":"+first+":"+second);
-        return new Lease(node,network.toString(),flow,first,second,state.leaseExpiry());
+        return new Lease(state.relayNode(),network.toString(),flow,first,second,state.leaseExpiry());
     }
     private void prune(long now){
         platform.sweep();
+        relays.prune(now);
         devices.values().removeIf(d->!platform.isSessionCurrent(d.userId(),d.session()));
         var it=networks.entrySet().iterator();
         while(it.hasNext()){
@@ -227,12 +243,7 @@ public final class NetworkAuthority {
             Signature s=Signature.getInstance("Ed25519");s.initVerify(key);s.update(payload);return s.verify(signature);
         }catch(Exception e){return false;}
     }
-    private static boolean validURI(String v,String scheme,String path){
-        try{URI u=URI.create(v);return scheme.equals(u.getScheme())&&u.getHost()!=null&&path.equals(u.getPath())
-                &&u.getRawUserInfo()==null&&u.getQuery()==null&&u.getFragment()==null;}catch(Exception e){return false;}
-    }
-    private static boolean validStun(String value){return value!=null&&value.matches("stun:[A-Za-z0-9.\\-]+:[0-9]{1,5}");}
-    private static String readSecret(String file)throws Exception{
+    static String readSecret(String file)throws Exception{
         Path p=Path.of(file);
         if(!Files.isRegularFile(p,LinkOption.NOFOLLOW_LINKS)||Files.size(p)>4096)
             throw new IllegalArgumentException("invalid secret file");

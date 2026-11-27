@@ -6,9 +6,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 P = argparse.ArgumentParser()
 P.add_argument("--inside", action="store_true")
 P.add_argument("--ice", action="store_true")
+P.add_argument("--multi", action="store_true")
 args = P.parse_args()
 if not args.inside:
-    os.execvp("unshare", ["unshare","--net","--",sys.executable,__file__,"--inside",*(["--ice"] if args.ice else [])])
+    os.execvp("unshare", ["unshare","--net","--",sys.executable,__file__,"--inside",*(["--ice"] if args.ice else []),*(["--multi"] if args.multi else [])])
 # This script never creates routes or listeners in the host network namespace.
 assert os.readlink("/proc/self/ns/net") != os.readlink("/proc/1/ns/net"), "isolated namespace required"
 procs = []
@@ -97,6 +98,15 @@ try:
              "BATTLE_NETWORK_ISSUER_KEY_FILE":str(d/"issuer.key"),"BATTLE_NETWORK_RELAY_SECRET_FILE":str(d/"relay.secret"),
              "BATTLE_NETWORK_RELAY_NODE":"battle-relay","BATTLE_NETWORK_RELAY_URL":RELAY,"BATTLE_NETWORK_ICE":str(args.ice).lower(),
              "BATTLE_NETWORK_STUN_URL":"stun:192.0.2.1:3478"}
+        if args.multi:
+            backup_file=d/"relay2.secret"
+            backup_file.write_text(os.urandom(32).hex()+"\n");os.chmod(backup_file,0o600)
+            relay_directory=d/"relays.json"
+            relay_directory.write_text(json.dumps([
+                {"id":"battle-relay","region":"primary","relayURL":RELAY,"stunURL":"stun:192.0.2.1:3478","secretFile":str(d/"relay.secret"),"priority":0,"maxConnections":256,"bytesPerSecond":10000000},
+                {"id":"battle-relay-2","region":"backup","relayURL":"wss://192.0.2.1:18445/relay/v1","stunURL":"stun:192.0.2.1:3479","secretFile":str(backup_file),"priority":1,"maxConnections":256,"bytesPerSecond":10000000}
+            ]))
+            env.update(BATTLE_NETWORK_RELAY_SECRET_FILE="",BATTLE_NETWORK_RELAY_URL="",BATTLE_NETWORK_RELAY_DIRECTORY_FILE=str(relay_directory))
         java=pathlib.Path(os.environ["JAVA_HOME"])/"bin/java" if os.environ.get("JAVA_HOME") else "java"
         serverlog=open(d/"server.log","w");logs.append(serverlog)
         server=spawn([java,"-jar",ROOT/"server/target/battle-ex-server-0.1.0-SNAPSHOT.jar"],env=env,stdout=serverlog,stderr=subprocess.STDOUT)
@@ -113,11 +123,24 @@ try:
                 if r.status!=status:raise AssertionError(f"{path}: expected HTTP {status}, got {r.status}")
                 data=r.read(); return json.loads(data) if data else None
         wait_for(lambda:api("/lobby",status=401),"TLS authority",45)
-        relaylog=open(d/"relay.log","w");logs.append(relaylog)
-        relayproc=spawn([ROOT/"agent/bin/battle-relay","--listen","192.0.2.1:18444","--issuer",issuer,"--secret-file",d/"relay.secret",
-                         "--authority",ORIGIN,"--authority-ca",cert,"--cert",cert,"--key",key,"--stun-listen","192.0.2.1:3478"],stdout=relaylog,stderr=subprocess.STDOUT)
+        def launch_relay(second=False):
+            label="relay2" if second else "relay"
+            log=open(d/(label+".log"),"a");logs.append(log)
+            port=18445 if second else 18444
+            stun=3479 if second else 3478
+            secretpath=d/("relay2.secret" if second else "relay.secret")
+            options=["--node","battle-relay-2" if second else "battle-relay"]
+            if args.multi:options+=["--register","--drain-file",str(d/(label+".drain"))]
+            return spawn([ROOT/"agent/bin/battle-relay","--listen",f"192.0.2.1:{port}","--issuer",issuer,"--secret-file",secretpath,
+                         "--authority",ORIGIN,"--authority-ca",cert,"--cert",cert,"--key",key,"--stun-listen",f"192.0.2.1:{stun}",*options],stdout=log,stderr=subprocess.STDOUT)
+        relayproc=launch_relay()
+        relayproc2=launch_relay(True) if args.multi else None
         users={n:api("/register",body={"username":"player_"+n,"password":"test-"+os.urandom(12).hex()},status=201) for n in ns}
         tokens={n:v["token"] for n,v in users.items()}
+        if args.multi:
+            def relay_nodes():return {n["id"]:n for n in api("/network/relays",tokens["a"])}
+            wait_for(lambda:len(relay_nodes())==2 and all(n["state"]=="online" for n in relay_nodes().values()),"authenticated node registration",20)
+            print("PASS: two registered relay nodes",flush=True)
         api("/network/info",status=401)
         assert api("/network/info",tokens["a"])["issuer"]==issuer
         api("/network/device",tokens["a"],{"identityKey":"01"*32,"wireguardKey":"02"*32,"proof":"bad"},status=403)
@@ -185,6 +208,32 @@ for kind,port in [(socket.SOCK_STREAM,39101),(socket.SOCK_DGRAM,39100)]:
             api("/network/relay/authorize",body=lease,relay_secret=secret,status=204)
             api("/network/relay/authorize",body=lease,relay_secret="bad",status=403)
             print("PASS: room isolation and authenticated relay lease",flush=True)
+            wait_for(lambda:all(a.peer(ip).get("probeSamples",0)>0 and a.peer(ip).get("probeLossPct") is not None for ip in (ips["b"],ips["c"])),"measured peer quality",20)
+            if args.multi:
+                wait_for(lambda:len(a.latest.get("relayCandidates",[]))==2 and all(n.get("probeMillis") is not None and n["probeMillis"]>=0 for n in a.latest["relayCandidates"]),"actual TLS relay probes",20)
+                print("PASS: measured UDP probe quality and TLS health response times",flush=True)
+                initial=a.latest.get("relayNode")
+                assert initial=="battle-relay",initial
+                wait_for(lambda:relay_nodes()["battle-relay"]["stats"]["ingress_bytes"]>0,"reported relay traffic",20)
+                started=time.monotonic()
+                terminate(relayproc)
+                wait_for(lambda:relay_nodes()["battle-relay"]["state"]=="offline","failed node heartbeat expiry",20)
+                wait_for(lambda:all(ag.latest.get("relayNode")=="battle-relay-2" and ag.latest.get("ip")==ips[ag.name] for ag in agents)
+                         and a.ping(ips["b"]) and a.ping(ips["c"]),"failover real traffic same IPs",45)
+                print(f"PASS: automatic relay failover with unchanged virtual IPs and live traffic ({time.monotonic()-started:.1f}s)",flush=True)
+                relayproc=launch_relay()
+                wait_for(lambda:relay_nodes()["battle-relay"]["state"]=="online","re-register restarted node",20)
+                (d/"relay2.drain").touch()
+                wait_for(lambda:relay_nodes()["battle-relay-2"]["state"]=="draining","maintenance heartbeat",20)
+                wait_for(lambda:all(ag.latest.get("relayNode")=="battle-relay" and ag.latest.get("ip")==ips[ag.name] for ag in agents)
+                         and a.ping(ips["b"]) and a.ping(ips["c"]),"maintenance migration real traffic",45)
+                print("PASS: node re-registration and maintenance migration",flush=True)
+                v=api("/network/snapshot",tokens["a"],{"nonce":os.urandom(32).hex()})["payload"]
+                payload=json.loads(base64.urlsafe_b64decode(v+"="*((4-len(v)%4)%4)))
+                lease_json=next(p["lease"] for p in payload["peers"] if p["ip"]==ips["c"]).split(".")[0]
+                lease=json.loads(base64.urlsafe_b64decode(lease_json+"="*((4-len(lease_json)%4)%4)))
+                api("/network/relay/authorize",body=lease,relay_secret=secret,status=204)
+
             # Departing client must lose old virtual interface and peers must revoke it.
             api("/rooms/"+r1["id"]+"/leave",tokens["c"],{},status=204)
             api("/network/relay/authorize",body=lease,relay_secret=secret,status=403)
@@ -201,10 +250,10 @@ for kind,port in [(socket.SOCK_STREAM,39101),(socket.SOCK_DGRAM,39100)]:
             wait_for(lambda:all(ag.no_interface() for ag in agents),"fail-closed interface cleanup without authority",25)
             for ag in agents:ag.stop()
             print("PASS: authority loss stops virtual interfaces at bounded snapshot expiry; stdin IPC shutdown",flush=True)
-            print("M2 REAL NETWORK INTEGRATION PASS",flush=True)
+            print(("M3 MULTI-RELAY" if args.multi else "M2 SINGLE-RELAY")+" REAL NETWORK INTEGRATION PASS",flush=True)
         except BaseException:
             for ag in agents:print("DIAGNOSTIC",ag.name,json.dumps(ag.latest),file=sys.stderr)
-            for name in ["server","relay","a","b","c","d"]:
+            for name in ["server","relay","relay2","a","b","c","d"]:
                 path=d/(name+".log")
                 if path.exists():print("LOG",name,path.read_text(errors="replace")[-1800:],file=sys.stderr)
             raise
@@ -213,7 +262,9 @@ for kind,port in [(socket.SOCK_STREAM,39101),(socket.SOCK_DGRAM,39100)]:
                 if ag.proc.poll() is None:
                     try:ag.stop()
                     except Exception:terminate(ag.proc)
-            terminate(relayproc);terminate(server)
+            terminate(relayproc)
+            if relayproc2 is not None:terminate(relayproc2)
+            terminate(server)
 finally:
     for p in reversed(procs):terminate(p)
     for f in logs:f.close()

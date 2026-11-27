@@ -12,19 +12,68 @@ import (
 
 const ProbePort = 39491
 
+type probeSample struct {
+	rtt float64
+	ok  bool
+}
+type quality struct {
+	RTT, Jitter, Loss *float64
+	Samples           int
+}
 type probes struct {
-	mu  sync.Mutex
-	rtt map[string]float64
+	mu      sync.Mutex
+	history map[string][]probeSample
 }
 
-func (p *probes) get(ip string) *float64 {
+// Rolling measured UDP echo quality, not estimates of game-frame loss.
+func (p *probes) record(ip string, rtt float64, ok bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	v, ok := p.rtt[ip]
-	if !ok {
-		return nil
+	if p.history == nil {
+		p.history = make(map[string][]probeSample)
 	}
-	return &v
+	samples := append(p.history[ip], probeSample{rtt, ok})
+	if len(samples) > 20 {
+		samples = append([]probeSample(nil), samples[len(samples)-20:]...)
+	}
+	p.history[ip] = samples
+}
+func (p *probes) get(ip string) quality {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	samples := p.history[ip]
+	result := quality{Samples: len(samples)}
+	if len(samples) == 0 {
+		return result
+	}
+	last := samples[len(samples)-1]
+	if last.ok {
+		rtt := last.rtt
+		result.RTT = &rtt
+	}
+	failures, pairs := 0, 0
+	var sum float64
+	for i, s := range samples {
+		if !s.ok {
+			failures++
+			continue
+		}
+		if i > 0 && samples[i-1].ok {
+			delta := s.rtt - samples[i-1].rtt
+			if delta < 0 {
+				delta = -delta
+			}
+			sum += delta
+			pairs++
+		}
+	}
+	loss := float64(failures) * 100 / float64(len(samples))
+	result.Loss = &loss
+	if pairs > 0 {
+		jitter := sum / float64(pairs)
+		result.Jitter = &jitter
+	}
+	return result
 }
 func (p *probes) run(ctx context.Context, s Snapshot) {
 	allow := map[string]bool{}
@@ -72,13 +121,7 @@ func (p *probes) run(ctx context.Context, s Snapshot) {
 			go func(ip string) {
 				defer wg.Done()
 				rtt, ok := echo(ctx, s.LocalIP, ip)
-				p.mu.Lock()
-				defer p.mu.Unlock()
-				if ok {
-					p.rtt[ip] = rtt
-				} else {
-					delete(p.rtt, ip)
-				}
+				p.record(ip, rtt, ok)
 			}(peer.IP)
 		}
 		wg.Wait()

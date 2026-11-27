@@ -211,9 +211,18 @@ onBeforeUnmount(()=>{if(netPoll)clearInterval(netPoll);reset();networkReconcile(
        </div>
        <template v-if="netInfo?.enabled&&netTrusted">
         <div v-if="netStatus.ip" class="network-ip"><span>{{language==='zh'?'本机虚拟 IP':'Local virtual IP'}}</span><code>{{netStatus.ip}}</code></div>
+        <div v-if="netStatus.relayNode" class="network-ip"><span>{{language==='zh'?'中继节点':'Relay node'}}</span><code>{{netStatus.relayRegion||netStatus.relayNode}} · {{netStatus.relayNode}}</code></div>
+        <div v-if="netStatus.relayCandidates?.length" class="network-help">
+         <div>{{language==='zh'?'中继 HTTPS 探测耗时':'Relay HTTPS probe time'}}</div>
+         <div v-for="candidate in netStatus.relayCandidates" :key="candidate.id" class="relay-probe-row">
+          <span>{{candidate.region}} · {{candidate.id}}</span><span>{{candidate.probeMillis===null?'—':candidate.probeMillis<0?(language==='zh'?'不可达':'Unreachable'):candidate.probeMillis+' ms'}}</span>
+         </div>
+        </div>
         <div v-for="peer in netStatus.peers||[]" :key="peer.userId" class="network-peer">
          <div><strong>{{lobby.memberNames[peer.userId]||peer.ip}}</strong><small>{{peer.ip}}</small></div>
-         <div class="network-metrics"><span>{{peerMode(peer.mode,peer.relayConnected)}}</span><strong>{{peer.rttMillis===null?'—':peer.rttMillis.toFixed(1)+' ms'}}</strong></div>
+         <div class="network-metrics"><span>{{peerMode(peer.mode,peer.relayConnected)}}</span><strong>{{peer.rttMillis===null?'—':peer.rttMillis.toFixed(1)+' ms'}}</strong>
+         <small v-if="peer.probeSamples">{{language==='zh'?'抖动':'Jitter'}} {{peer.jitterMillis==null?'—':peer.jitterMillis.toFixed(1)+' ms'}}</small>
+         <small v-if="peer.probeLossPct!=null">{{language==='zh'?'探测丢包':'Probe loss'}} {{peer.probeLossPct.toFixed(0)}}% · {{peer.probeSamples}}</small></div>
         </div>
         <p v-if="netStatus.state==='running'&&!(netStatus.peers||[]).length" class="network-help">{{language==='zh'?'等待其他玩家连接网络。':'Waiting for other players to connect.'}}</p>
         <p v-if="netStatus.error" class="network-error">{{netStatus.error}}</p>

@@ -1,6 +1,7 @@
 package com.battleex.web;
 
 import com.battleex.network.NetworkAuthority;
+import com.battleex.network.RelayDirectory;
 import com.battleex.platform.Platform;
 import com.battleex.platform.ReactiveWork;
 import org.springframework.http.*;
@@ -8,6 +9,7 @@ import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Mono;
 
 import java.util.Map;
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/v1/network")
@@ -33,18 +35,31 @@ public final class NetworkApi {
             @RequestBody NetworkAuthority.DeviceRequest req) {
         return work.state(() -> authority.enroll(Api.bearer(auth),req));
     }
-    public record SnapshotRequest(String nonce) {}
+    public record SnapshotRequest(String nonce, Map<String,Integer> relayMeasurements) {}
     @PostMapping("/snapshot")
     Mono<ResponseEntity<NetworkAuthority.SignedSnapshot>> snapshot(@RequestHeader(value="Authorization",required=false)String auth,
                                                                     @RequestBody SnapshotRequest req) {
         return work.state(() -> {
-            try { return ResponseEntity.ok(authority.snapshot(Api.bearer(auth),req.nonce())); }
+            try { return ResponseEntity.ok(authority.snapshot(Api.bearer(auth),req.nonce(),req.relayMeasurements())); }
             catch (NetworkAuthority.NoRoom e) { return ResponseEntity.noContent().build(); }
+            catch (NetworkAuthority.NoRelay e) { return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build(); }
         });
     }
     @PostMapping("/disconnect") @ResponseStatus(HttpStatus.NO_CONTENT)
     Mono<Void> disconnect(@RequestHeader(value="Authorization",required=false)String auth) {
         return work.stateRun(() -> authority.disconnect(Api.bearer(auth)));
+    }
+    @PostMapping("/relay/heartbeat")
+    Mono<ResponseEntity<RelayDirectory.Limits>> heartbeat(@RequestHeader(value="X-Relay-Secret",required=false)String secret,
+                                          @RequestBody RelayDirectory.Heartbeat body) {
+        return work.state(() -> {
+            var limits=authority.heartbeat(secret,body);
+            return limits==null?ResponseEntity.status(HttpStatus.FORBIDDEN).build():ResponseEntity.ok(limits);
+        });
+    }
+    @GetMapping("/relays")
+    Mono<List<RelayDirectory.PublicStatus>> relays(@RequestHeader(value="Authorization",required=false)String auth) {
+        return work.state(() -> authority.relayStatus(Api.bearer(auth)));
     }
     @PostMapping("/relay/authorize")
     Mono<ResponseEntity<Void>> authorize(@RequestHeader(value="X-Relay-Secret",required=false)String secret,

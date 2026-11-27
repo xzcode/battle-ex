@@ -2,12 +2,12 @@
 
 A self-hostable PC game LAN multiplayer and competitive platform. Shared networking engine: [Network Core EX](https://github.com/xzcode/network-core-ex).
 
-**Status: M2 authenticated room-network development baseline; no playable release yet.**
+**Status: M3 multi-relay development baseline; no playable release yet.**
 
 Spring Boot WebFlux / Reactor Netty / Java 21 accounts and lobby, optional reactive MongoDB account persistence,
 Vue 3 desktop UI and a Go agent/relay integrating the pinned Network Core EX
 candidate. Linux isolated real-room direct/relay, isolation and revocation
-tests pass. See [M2 implementation and deployment configuration](docs/M2_IMPLEMENTATION.md)
+tests pass. Multi-relay directory, node heartbeat, automatic migration and quality probes are implemented; see [M3 multi-relay configuration and acceptance](docs/M3_MULTIRELAY.md). See [M2 implementation and deployment configuration](docs/M2_IMPLEMENTATION.md)
 and [M1 implementation](docs/M1_IMPLEMENTATION.md). Windows native adapter,
 Tauri installation, actual games and complex NAT reliability remain acceptance
 gates.

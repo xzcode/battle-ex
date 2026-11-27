@@ -47,34 +47,37 @@ type Peer struct {
 	Lease        string `json:"lease"`
 }
 type Snapshot struct {
-	Version       int    `json:"version"`
-	RoomID        string `json:"roomId"`
-	NetworkID     string `json:"networkId"`
-	Revision      int64  `json:"revision"`
-	IssuedAt      int64  `json:"issuedAt"`
-	ValidUntil    int64  `json:"validUntil"`
-	LocalIP       string `json:"localIP"`
-	IdentityKey   string `json:"identityKey"`
-	WireguardKey  string `json:"wireguardKey"`
-	RelayNode     string `json:"relayNode"`
-	RelayURL      string `json:"relayURL"`
-	StunURL       string `json:"stunURL"`
-	ICE           bool   `json:"ice"`
-	Peers         []Peer `json:"peers"`
-	Nonce         string `json:"nonce"`
-	SessionDigest string `json:"sessionDigest"`
+	Version         int              `json:"version"`
+	RoomID          string           `json:"roomId"`
+	NetworkID       string           `json:"networkId"`
+	Revision        int64            `json:"revision"`
+	IssuedAt        int64            `json:"issuedAt"`
+	ValidUntil      int64            `json:"validUntil"`
+	LocalIP         string           `json:"localIP"`
+	IdentityKey     string           `json:"identityKey"`
+	WireguardKey    string           `json:"wireguardKey"`
+	RelayNode       string           `json:"relayNode"`
+	RelayRegion     string           `json:"relayRegion"`
+	RelayCandidates []RelayCandidate `json:"relayCandidates"`
+	RelayURL        string           `json:"relayURL"`
+	StunURL         string           `json:"stunURL"`
+	ICE             bool             `json:"ice"`
+	Peers           []Peer           `json:"peers"`
+	Nonce           string           `json:"nonce"`
+	SessionDigest   string           `json:"sessionDigest"`
 }
 type signed struct {
 	Payload   string `json:"payload"`
 	Signature string `json:"signature"`
 }
 type Client struct {
-	origin string
-	token  string
-	digest string
-	issuer ed25519.PublicKey
-	http   *http.Client
-	device Device
+	origin      string
+	token       string
+	digest      string
+	issuer      ed25519.PublicKey
+	http        *http.Client
+	device      Device
+	relayProbes *relayProbes
 }
 
 var ErrUnauthorized = errors.New("network authorization revoked")
@@ -127,7 +130,7 @@ func NewClient(c Credentials, issuerHex, ca string, d Device) (*Client, error) {
 		return nil, e
 	}
 	sum := sha256.Sum256([]byte(c.Token))
-	return &Client{origin, c.Token, hex.EncodeToString(sum[:]), ed25519.PublicKey(pub), h, d}, nil
+	return &Client{origin: origin, token: c.Token, digest: hex.EncodeToString(sum[:]), issuer: ed25519.PublicKey(pub), http: h, device: d}, nil
 }
 func (c *Client) post(ctx context.Context, path string, body any, result any) (int, error) {
 	raw, e := json.Marshal(body)
@@ -186,11 +189,18 @@ func (c *Client) Snapshot(ctx context.Context) (*Snapshot, error) {
 	}
 	n := hex.EncodeToString(nonce)
 	var r signed
-	status, e := c.post(ctx, "snapshot", map[string]string{"nonce": n}, &r)
+	body := map[string]any{"nonce": n}
+	if c.relayProbes != nil {
+		body["relayMeasurements"] = c.relayProbes.measurements()
+	}
+	status, e := c.post(ctx, "snapshot", body, &r)
 	if e != nil {
 		return nil, e
 	}
 	if status == 204 {
+		if c.relayProbes != nil {
+			c.relayProbes.update(nil)
+		}
 		return nil, nil
 	}
 	data, e := base64.RawURLEncoding.DecodeString(r.Payload)
@@ -207,6 +217,9 @@ func (c *Client) Snapshot(ctx context.Context) (*Snapshot, error) {
 	}
 	if e = c.validate(&s, n, time.Now()); e != nil {
 		return nil, e
+	}
+	if c.relayProbes != nil {
+		c.relayProbes.update(s.RelayCandidates)
 	}
 	return &s, nil
 }
@@ -225,6 +238,14 @@ func (c *Client) validate(s *Snapshot, nonce string, now time.Time) error {
 	relay, e := url.Parse(s.RelayURL)
 	if e != nil || relay.Scheme != "wss" || relay.Host == "" || relay.User != nil || relay.Path != "/relay/v1" || relay.RawQuery != "" || relay.Fragment != "" {
 		return fail
+	}
+	seenNodes := map[string]bool{}
+	for _, node := range s.RelayCandidates {
+		u, err := url.Parse(node.RelayURL)
+		if err != nil || node.ID == "" || seenNodes[node.ID] || u.Scheme != "wss" || u.Host == "" || u.User != nil || u.Path != "/relay/v1" || u.RawQuery != "" || u.Fragment != "" {
+			return fail
+		}
+		seenNodes[node.ID] = true
 	}
 	if s.ICE != strings.HasPrefix(s.StunURL, "stun:") {
 		return fail

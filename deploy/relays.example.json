@@ -1,0 +1,22 @@
+[
+  {
+    "id": "relay-east",
+    "region": "East",
+    "relayURL": "wss://relay-east.example.com/relay/v1",
+    "stunURL": "stun:relay-east.example.com:3478",
+    "secretFile": "/etc/battle-ex/relay-east.secret",
+    "priority": 0,
+    "maxConnections": 256,
+    "bytesPerSecond": 10000000
+  },
+  {
+    "id": "relay-west",
+    "region": "West",
+    "relayURL": "wss://relay-west.example.com/relay/v1",
+    "stunURL": "stun:relay-west.example.com:3478",
+    "secretFile": "/etc/battle-ex/relay-west.secret",
+    "priority": 1,
+    "maxConnections": 256,
+    "bytesPerSecond": 10000000
+  }
+]

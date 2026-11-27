@@ -61,6 +61,8 @@ func run() error {
 	cert := flag.String("cert", "", "TLS cert")
 	key := flag.String("key", "", "TLS key")
 	stunListen := flag.String("stun-listen", "", "optional STUN UDP4 address")
+	register := flag.Bool("register", false, "register and heartbeat to configured relay directory")
+	drainFile := flag.String("drain-file", "", "existing file requests maintenance drain")
 	flag.Parse()
 	pub, e := hex.DecodeString(*issuer)
 	if e != nil || len(pub) != 32 {
@@ -106,6 +108,19 @@ func run() error {
 	mux := http.NewServeMux()
 	mux.Handle("/relay/v1", rs)
 	mux.Handle("/signal/v1", ss)
+	mux.HandleFunc("/health/v1", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodHead {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if drainRequested(*drainFile) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("X-Battle-Relay", *node)
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusNoContent)
+	})
 	pair, e := tls.LoadX509KeyPair(*cert, *key)
 	if e != nil {
 		return e
@@ -132,6 +147,13 @@ func run() error {
 		go func() { errs <- stun.Serve(ctx, c) }()
 	}
 	go func() { errs <- srv.ServeTLS(l, "", "") }()
+	if *register {
+		go func() {
+			if e := runHeartbeat(ctx, hc, authority, shared, *node, *drainFile, rs); e != nil {
+				errs <- e
+			}
+		}()
+	}
 	select {
 	case <-ctx.Done():
 		shutdown, cancel := context.WithTimeout(context.Background(), 3*time.Second)
