@@ -16,4 +16,10 @@ test "$ready" = 1
 port="$(docker port "$name" 27017/tcp | awk -F: '{print $NF;exit}')"
 export BATTLE_MONGO_URI="mongodb://battle_test:$password@127.0.0.1:$port/?authSource=admin&serverSelectionTimeoutMS=5000"
 export BATTLE_MONGO_DB=battle_ex_isolated_test BATTLE_TEST_PERSISTENCE=true
-node scripts/test-platform.mjs
+if [[ "${1:-}" == "--cluster" ]]; then
+  export BATTLE_CLUSTER_TEST=true BATTLE_STATE_MODE=mongo BATTLE_CLUSTER_TEST_MONGO_CONTAINER="$name"
+  node scripts/test-cluster.mjs
+else
+  export BATTLE_STATE_MODE=memory
+  node scripts/test-platform.mjs
+fi

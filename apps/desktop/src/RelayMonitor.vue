@@ -6,7 +6,7 @@ const props=defineProps<{origin:string;token:string;language:Language}>()
 type Stats={connections:number;ingress_bytes:number;egress_bytes:number;dropped_packets:number}
 type Node={id:string;region:string;state:string;seenAt:number;stats:Stats|null;maxConnections:number;bytesPerSecond:number}
 type Minute={minute:number;peakConnections:number;ingressBytes:number;egressBytes:number;droppedPackets:number;samples:number;discontinuities:number}
-type History={node:string;retentionMinutes:number;minutes:Minute[]}
+type History={node:string;retentionMinutes:number;minutes:Minute[];persistent?:boolean}
 const nodes=ref<Node[]>([]),selected=ref(''),history=ref<History|null>(null),loading=ref(false),error=ref(''),updated=ref(0)
 let timer:ReturnType<typeof setInterval>|undefined
 let disposed=false
@@ -70,7 +70,7 @@ onBeforeUnmount(()=>{disposed=true;++requestGeneration;if(timer)clearInterval(ti
    <div v-if="minutes.length" class="relay-scroll relay-history"><table><thead><tr><th>{{l('Minute','时间')}}</th><th>{{l('Peak connections','连接峰值')}}</th><th>{{l('Received','接收增量')}}</th><th>{{l('Sent','发送增量')}}</th><th>{{l('Dropped','丢弃包增量')}}</th><th>{{l('Samples','样本')}}</th><th>{{l('Gaps / resets','间断/重置')}}</th></tr></thead><tbody>
     <tr v-for="m in minutes" :key="m.minute"><td>{{time(m.minute)}}</td><td>{{m.peakConnections}}</td><td>{{bytes(m.ingressBytes)}}</td><td>{{bytes(m.egressBytes)}}</td><td>{{m.droppedPackets}}</td><td>{{m.samples}}</td><td>{{m.discontinuities}}</td></tr>
    </tbody></table></div>
-   <div class="relay-history-content muted small">{{l('Observed counter deltas; gaps and restarts are excluded. In-memory retention: ','已观测的计数增量，不包含间断或重启期间的未知流量。内存保留：')}}{{history?.retentionMinutes??'—'}} {{l('minutes; history resets when the authority restarts.','分钟；中心服务重启后历史重置。')}}</div>
+   <div class="relay-history-content muted small">{{l('Observed counter deltas; gaps and restarts are excluded. Retention: ','已观测的计数增量，不包含间断或重启期间的未知流量。保留：')}}{{history?.retentionMinutes??'—'}} {{l('minutes.','分钟。')}} {{history?.persistent?l('Shared MongoDB storage; retained across authority restarts.','共享 MongoDB 存储，中心服务重启后保留。'):l('In-memory history; resets when the authority restarts.','内存历史，中心服务重启后重置。')}}</div>
   </div>
  </section>
 </template>

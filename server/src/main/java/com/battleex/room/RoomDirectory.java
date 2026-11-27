@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.Set;
 
 /**
  * Single-process room domain. The actor MUST come from the authenticated
@@ -33,8 +34,8 @@ public final class RoomDirectory {
     }
 
     private static final class Room {
-        final UUID id = UUID.randomUUID();
-        final UUID networkId = UUID.randomUUID();
+        final UUID id;
+        final UUID networkId;
         final String name;
         final String gameId;
         final int capacity;
@@ -47,6 +48,8 @@ public final class RoomDirectory {
         String invite;
 
         Room(UUID actor, String name, String gameId, int capacity, Visibility visibility) {
+            this.id = UUID.randomUUID();
+            this.networkId = UUID.randomUUID();
             this.name = name;
             this.gameId = gameId;
             this.capacity = capacity;
@@ -54,6 +57,14 @@ public final class RoomDirectory {
             this.host = actor;
             this.members.put(actor, false);
             if (visibility == Visibility.PRIVATE) rotateInvite();
+        }
+
+        Room(StoredRoom stored) {
+            RoomView v=stored.view();
+            id=v.id();networkId=v.networkId();name=v.name();gameId=v.gameId();
+            capacity=v.capacity();visibility=v.visibility();host=v.host();state=v.state();
+            revision=v.revision();membershipRevision=v.membershipRevision();invite=stored.invite();
+            for(Member member:v.members())members.put(member.userId(),member.ready());
         }
 
         void rotateInvite() {
@@ -79,6 +90,26 @@ public final class RoomDirectory {
     // No imposed maximum number of rooms.
     private final Map<UUID, Room> rooms = new LinkedHashMap<>();
     private final Map<UUID, UUID> active = new HashMap<>();
+
+    // Internal persistence DTO; invitations are never exposed by the lobby.
+    public record StoredRoom(RoomView view,String invite) {}
+    public synchronized List<StoredRoom> exportState(){
+        return rooms.values().stream().map(r->new StoredRoom(r.view(),r.invite)).toList();
+    }
+    public synchronized void importState(List<StoredRoom> stored){
+        Map<UUID,Room> next=new LinkedHashMap<>();
+        Map<UUID,UUID> membership=new HashMap<>();
+        Set<UUID> networks=new java.util.HashSet<>();
+        for(StoredRoom value:stored){
+            Room r=new Room(value);
+            if(r.members.isEmpty()||!r.members.containsKey(r.host)||r.members.size()>r.capacity||
+                    !networks.add(r.networkId)||next.put(r.id,r)!=null)
+                throw new IllegalStateException("invalid persisted room");
+            for(UUID user:r.members.keySet())if(membership.put(user,r.id)!=null)
+                throw new IllegalStateException("duplicate persisted membership");
+        }
+        rooms.clear();rooms.putAll(next);active.clear();active.putAll(membership);
+    }
 
     public synchronized RoomView create(UUID actor, String name, String gameId,
                                         int capacity, Visibility visibility) {

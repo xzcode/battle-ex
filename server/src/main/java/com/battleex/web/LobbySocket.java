@@ -50,7 +50,7 @@ public final class LobbySocket implements WebSocketHandler {
                                         .onBackpressureLatest()
                                         .concatMap(tick -> work.state(() -> platform.lobby(token)), 1)
                                         .distinctUntilChanged()
-                                        .concatMap(lobby -> work.state(() -> json.writeValueAsString(
+                                        .concatMap(lobby -> Mono.fromCallable(() -> json.writeValueAsString(
                                                 Map.of("type","lobby","data",lobby))), 1)
                                         .map(session::textMessage);
 
@@ -86,5 +86,5 @@ public final class LobbySocket implements WebSocketHandler {
     // Keep session expiration active even when there are no live WebSockets.
     // Spring's scheduling thread is separate from Reactor Netty.
     @Scheduled(fixedDelay=1000)
-    public void sweep() { platform.sweep(); }
+    public Mono<Void> sweep() { return work.stateRun(platform::sweep); }
 }

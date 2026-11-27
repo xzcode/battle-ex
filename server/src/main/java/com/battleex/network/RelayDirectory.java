@@ -16,14 +16,14 @@ public final class RelayDirectory {
     public record Heartbeat(String node, String instance, boolean draining, Stats stats) {}
     public record Minute(long minute, int peakConnections, long ingressBytes, long egressBytes,
                          long droppedPackets, int samples, int discontinuities) {}
-    public record History(String node, int retentionMinutes, List<Minute> minutes) {}
+    public record History(String node, int retentionMinutes, List<Minute> minutes, boolean persistent) {}
     public record Limits(int maxConnections, long bytesPerSecond) {}
     public record Candidate(String id, String region, String relayURL) {}
     public record PublicStatus(String id, String region, String state, long seenAt, Stats stats,
                         int maxConnections, long bytesPerSecond) {}
     record Node(Config config, String secret, boolean legacy) {}
-    private record Live(String instance, long seen, boolean draining, Stats stats) {}
-    private record Sample(long seen, Map<String,Integer> measurements) {}
+    public record Live(String instance, long seen, boolean draining, Stats stats) {}
+    public record Sample(long seen, Map<String,Integer> measurements) {}
     private final Map<String,Node> nodes = new TreeMap<>();
     private final Map<String,Live> live = new HashMap<>();
     private final Map<String,Sample> samples = new HashMap<>();
@@ -56,6 +56,44 @@ public final class RelayDirectory {
         }else if(!legacyURL.isBlank()||!legacySecretFile.isBlank()){
             add(new Config(legacyId,"default",legacyURL,legacyStun,legacySecretFile,0,256,1L<<30),true);
         }
+    }
+
+    // Only runtime state is persisted. Node secrets and endpoint
+    // configuration remain operator-owned local files.
+    public record StateDump(Map<String,Live> live,Map<String,Sample> samples,
+            Map<String,Long> generations,Map<String,List<Minute>> history,
+            long nextGeneration,long lastHistoryPrune) {}
+    StateDump exportState(){
+        Map<String,List<Minute>> rows=new HashMap<>();
+        history.forEach((k,v)->rows.put(k,List.copyOf(v.values())));
+        return new StateDump(Map.copyOf(live),Map.copyOf(samples),Map.copyOf(generations),
+                Map.copyOf(rows),nextGeneration,lastHistoryPrune);
+    }
+    void importState(StateDump state){
+        if(!state.generations().keySet().equals(nodes.keySet())||!nodes.keySet().containsAll(state.live().keySet()))
+            throw new IllegalStateException("relay configuration mismatch");
+        live.clear();live.putAll(state.live());samples.clear();samples.putAll(state.samples());
+        generations.clear();generations.putAll(state.generations());history.clear();
+        state.history().forEach((id,list)->{
+            var series=new TreeMap<Long,Minute>();
+            for(Minute row:list)series.put(row.minute(),row);
+            history.put(id,series);
+        });
+        nextGeneration=state.nextGeneration();lastHistoryPrune=state.lastHistoryPrune();
+    }
+    String configurationFingerprint(){
+        // A digest of stable, ordered configuration including per-node
+        // secret hashes, but neither private file paths nor secret values.
+        var fields=new ArrayList<String>();
+        fields.add(Boolean.toString(dynamic));fields.add(Boolean.toString(ice));
+        for(Node n:nodes.values()){
+            Config c=n.config();
+            fields.add(c.id());fields.add(c.region());fields.add(c.relayURL());
+            fields.add(Objects.toString(c.stunURL(),""));fields.add(Integer.toString(c.priority()));
+            fields.add(Integer.toString(c.maxConnections()));fields.add(Long.toString(c.bytesPerSecond()));
+            fields.add(NetworkAuthority.sha256(n.secret()));fields.add(Boolean.toString(n.legacy()));
+        }
+        return NetworkAuthority.sha256(String.join("\0",fields));
     }
 
     private void add(Config c,boolean legacy)throws Exception{
@@ -145,7 +183,7 @@ public final class RelayDirectory {
         if(!nodes.containsKey(node))throw new IllegalArgumentException("unknown relay node");
         pruneHistory(now);
         var values=history.get(node);
-        return new History(node,retentionMinutes,values==null?List.of():List.copyOf(values.values()));
+        return new History(node,retentionMinutes,values==null?List.of():List.copyOf(values.values()),false);
     }
 
     private boolean healthy(Node n,long now){

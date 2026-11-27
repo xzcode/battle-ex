@@ -30,8 +30,8 @@ public final class NetworkAuthority {
                            String relayNode, String relayURL, String stunURL, boolean ice,
                            List<Peer> peers, String nonce, String sessionDigest, String relayRegion,
                            List<RelayDirectory.Candidate> relayCandidates) {}
-    private record Device(UUID userId, String session, String identity, String wireguard, long seen) {}
-    private record RoomState(int subnet, String fingerprint, long revision, long leaseExpiry,
+    public record Device(UUID userId, String session, String identity, String wireguard, long seen) {}
+    public record RoomState(int subnet, String fingerprint, long revision, long leaseExpiry,
                              Map<UUID,Integer> addresses, String relayNode, long changedAt) {}
     private static final byte[] SNAP_DOMAIN = "battle-ex/snapshot/v1\0".getBytes(StandardCharsets.UTF_8);
     private static final byte[] LEASE_DOMAIN = "network-ex/lease/v1\0".getBytes(StandardCharsets.UTF_8);
@@ -47,6 +47,7 @@ public final class NetworkAuthority {
     private final RelayDirectory relays;
     private final boolean ice;
     private final String directoryFile;
+    private final boolean clustered;
     private final int retentionMinutes;
     private final long leaseSeconds;
     private boolean reloadRejected;
@@ -65,8 +66,9 @@ public final class NetworkAuthority {
             @Value("${battle.network.relay-secret-file:}") String secretFile,
             @Value("${battle.network.relay-directory-file:}") String directoryFile,
             @Value("${battle.network.lease-seconds:840}") long leaseSeconds,
-            @Value("${battle.network.metrics-retention-minutes:1440}") int retentionMinutes) throws Exception {
-        this.platform=platform; this.json=json; this.ice=ice;
+            @Value("${battle.network.metrics-retention-minutes:1440}") int retentionMinutes,
+            @Value("${battle.state-mode:memory}") String stateMode) throws Exception {
+        this.platform=platform; this.json=json; this.ice=ice; this.clustered=stateMode.equals("mongo");
         if(leaseSeconds<30||leaseSeconds>MAX_LEASE_SECONDS)throw new IllegalArgumentException("lease seconds must be 30–840");
         this.leaseSeconds=leaseSeconds;this.directoryFile=directoryFile;this.retentionMinutes=retentionMinutes;
         relays=new RelayDirectory(json,directoryFile,ice,node,relayURL,stunURL,secretFile,retentionMinutes);
@@ -90,7 +92,7 @@ public final class NetworkAuthority {
     // Reactor Netty thread and not under the synchronized platform lock.
     @Scheduled(fixedDelay=3000)
     public void reloadRelayDirectory(){
-        if(directoryFile.isBlank()||!enabled())return;
+        if(clustered||directoryFile.isBlank()||!enabled())return;
         try{
             var replacement=new RelayDirectory(json,directoryFile,ice,"","","","",retentionMinutes);
             synchronized(platform){
@@ -102,6 +104,23 @@ public final class NetworkAuthority {
             if(!reloadRejected)LOG.warn("Rejected invalid relay directory update; retaining last valid configuration");
             reloadRejected=true;
         }
+    }
+    public record StateDump(Map<UUID,Device> devices,Map<UUID,RoomState> networks,
+                            Map<Integer,Long> quarantine,Map<UUID,Long> revisions,
+                            RelayDirectory.StateDump relays) {}
+    public StateDump exportState(){
+        synchronized(platform){return new StateDump(Map.copyOf(devices),Map.copyOf(networks),
+                Map.copyOf(quarantine),Map.copyOf(revisions),relays.exportState());}
+    }
+    public void importState(StateDump state){
+        synchronized(platform){
+            relays.importState(state.relays());
+            devices.clear();devices.putAll(state.devices());networks.clear();networks.putAll(state.networks());
+            quarantine.clear();quarantine.putAll(state.quarantine());revisions.clear();revisions.putAll(state.revisions());
+        }
+    }
+    public String configurationFingerprint(){
+        return sha256("battle-authority-v1:"+issuer+":"+ice+":"+leaseSeconds+":"+retentionMinutes+":"+relays.configurationFingerprint());
     }
     public boolean enabled(){return signer!=null;}
     public String issuer(){return issuer;}
@@ -191,7 +210,11 @@ public final class NetworkAuthority {
         synchronized(platform){platform.authenticate(token);return relays.status(Instant.now().getEpochSecond());}
     }
     public RelayDirectory.History relayHistory(String token,String node){
-        synchronized(platform){platform.authenticate(token);return relays.history(node,Instant.now().getEpochSecond());}
+        synchronized(platform){
+            platform.authenticate(token);
+            var history=relays.history(node,Instant.now().getEpochSecond());
+            return new RelayDirectory.History(history.node(),history.retentionMinutes(),history.minutes(),clustered);
+        }
     }
     public static final class NoRelay extends RuntimeException {public NoRelay(){super("no healthy relay node available");}}
     public static final class NoRoom extends RuntimeException {public NoRoom(){super("not in a room");}}
@@ -254,7 +277,7 @@ public final class NetworkAuthority {
     }
     private static String ip(int slot,int host){return "10."+(160+(slot>>>8))+"."+(slot&255)+"."+host;}
     private static boolean key(String value){return value!=null&&value.matches("[a-f0-9]{64}")&&!value.equals("0".repeat(64));}
-    private static String sha256(String s){
+    static String sha256(String s){
         try{return HEX.formatHex(MessageDigest.getInstance("SHA-256").digest(s.getBytes(StandardCharsets.UTF_8)));}
         catch(Exception e){throw new IllegalStateException("digest failed");}
     }

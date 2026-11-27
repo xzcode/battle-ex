@@ -15,16 +15,18 @@ import java.util.concurrent.Callable;
  */
 @Component
 public final class ReactiveWork implements DisposableBean {
+    private final ClusterAuthority cluster;
+    public ReactiveWork(ClusterAuthority cluster){this.cluster=cluster;}
     private final Scheduler state = Schedulers.newBoundedElastic(4, 2048, "battle-state");
     private final Scheduler password = Schedulers.newBoundedElastic(
             Math.max(2, Math.min(8, Runtime.getRuntime().availableProcessors())), 256, "battle-password");
 
     public <T> Mono<T> state(Callable<T> task) {
-        return Mono.fromCallable(task).subscribeOn(state);
+        return cluster.execute(task,state);
     }
 
     public Mono<Void> stateRun(Runnable task) {
-        return Mono.fromRunnable(task).subscribeOn(state).then();
+        return state(()->{task.run();return Boolean.TRUE;}).then();
     }
 
     public <T> Mono<T> password(Callable<T> task) {

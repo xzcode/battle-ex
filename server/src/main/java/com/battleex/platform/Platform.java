@@ -19,7 +19,7 @@ public final class Platform {
     public record Login(String token, Instant expiresAt, User user) {}
     public record Lobby(User user, long revision, int signedInUsers, List<RoomDirectory.RoomSummary> rooms,
                         RoomDirectory.RoomView activeRoom, Map<UUID,String> memberNames) {}
-    private record Session(User user, Instant expiresAt, String digest) {}
+    public record Session(User user, Instant expiresAt, String digest) {}
     public static final class Unauthorized extends RuntimeException {
         public Unauthorized() { super("authentication required or invalid credentials"); }
     }
@@ -42,6 +42,25 @@ public final class Platform {
     Platform(AccountStore accounts, ReactiveWork work, Clock clock, Duration lifetime) {
         this.accounts = accounts; this.work = work; this.clock = clock; this.lifetime = lifetime;
         dummyHash = passwords.encode(UUID.randomUUID().toString());
+    }
+
+    public record StateDump(long revision,List<Session> sessions,List<RoomDirectory.StoredRoom> rooms) {}
+    public synchronized StateDump exportState(){
+        return new StateDump(revision,sessions.values().stream()
+                .sorted(Comparator.comparing(Session::digest)).toList(),rooms.exportState());
+    }
+    public synchronized void importState(StateDump state){
+        Map<String,Session> next=new HashMap<>();
+        Map<UUID,Session> users=new HashMap<>();
+        for(Session session:state.sessions()){
+            if(next.put(session.digest(),session)!=null||users.put(session.user().id(),session)!=null)
+                throw new IllegalStateException("invalid persisted session");
+        }
+        for(var room:state.rooms())for(var member:room.view().members())
+            if(!users.containsKey(member.userId()))throw new IllegalStateException("room member has no persisted session");
+        rooms.importState(state.rooms());
+        sessions.clear();sessions.putAll(next);byUser.clear();byUser.putAll(users);
+        revision=state.revision();
     }
 
     public Mono<Login> register(String rawName, String password) {

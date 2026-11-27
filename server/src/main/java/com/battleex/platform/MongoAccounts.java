@@ -3,6 +3,9 @@ package com.battleex.platform;
 import com.mongodb.ConnectionString;
 import com.mongodb.ErrorCategory;
 import com.mongodb.MongoWriteException;
+import com.mongodb.ReadConcern;
+import com.mongodb.ReadPreference;
+import com.mongodb.WriteConcern;
 import com.mongodb.reactivestreams.client.MongoClient;
 import com.mongodb.reactivestreams.client.MongoClients;
 import com.mongodb.reactivestreams.client.MongoCollection;
@@ -23,7 +26,9 @@ public final class MongoAccounts implements AccountStore {
         if (!database.matches("[a-zA-Z0-9_-]+")) throw new IllegalArgumentException("invalid database name");
         client = MongoClients.create(new ConnectionString(uri));
         try {
-            accounts = client.getDatabase(database).getCollection("accounts");
+            accounts = client.getDatabase(database).getCollection("accounts")
+                    .withReadPreference(ReadPreference.primary()).withReadConcern(ReadConcern.MAJORITY)
+                    .withWriteConcern(WriteConcern.MAJORITY);
             // Application startup only: establish the unique index before accepting traffic.
             // No blocking database operation in any request/connection handler.
             Mono.from(accounts.createIndex(ascending("username"), new IndexOptions().unique(true)))

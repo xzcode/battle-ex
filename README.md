@@ -2,12 +2,12 @@
 
 A self-hostable PC game LAN multiplayer and competitive platform. Shared networking engine: [Network Core EX](https://github.com/xzcode/network-core-ex).
 
-**Status: M3 multi-relay and transport-refresh development baseline; no playable release yet.**
+**Status: M3 multi-relay, transport refresh and shared-authority development baseline; no playable release yet.**
 
 Spring Boot WebFlux / Reactor Netty / Java 21 accounts and lobby, optional reactive MongoDB account persistence,
 Vue 3 desktop UI and a Go agent/relay integrating the pinned Network Core EX
 candidate. Linux isolated real-room direct/relay, isolation and revocation
-tests pass. Multi-relay directory, node heartbeat, automatic migration and quality probes are implemented; see [M3 multi-relay configuration and acceptance](docs/M3_MULTIRELAY.md). Transport-only refresh, hot relay-directory reload and the relay monitor are documented in [M3 refresh and monitoring](docs/M3_PATH_REFRESH_AND_MONITOR.md). See [M2 implementation and deployment configuration](docs/M2_IMPLEMENTATION.md)
+tests pass. Multi-relay directory, node heartbeat, automatic migration and quality probes are implemented; see [M3 multi-relay configuration and acceptance](docs/M3_MULTIRELAY.md). Transport-only refresh, hot relay-directory reload and the relay monitor are documented in [M3 refresh and monitoring](docs/M3_PATH_REFRESH_AND_MONITOR.md). Optional shared MongoDB state and multi-instance deployment are documented in [M3.8 shared authority](docs/M3_CLUSTER.md). See [M2 implementation and deployment configuration](docs/M2_IMPLEMENTATION.md)
 and [M1 implementation](docs/M1_IMPLEMENTATION.md). Windows native adapter,
 Tauri installation, actual games and complex NAT reliability remain acceptance
 gates.
@@ -20,7 +20,7 @@ Windows-first desktop client (Tauri 2 + Vue 3 + TypeScript), game lobby, private
 ## Architecture
 
 - Desktop UI communicates with a separate Go network agent using authenticated local IPC. Virtual adapters are installed with explicit OS permissions.
-- Product control plane: Java 21 / Spring Boot WebFlux + Reactor Netty, reactive HTTP/WebSocket and MongoDB Reactive Streams for account persistence; room/session state remains single-instance in memory. Redis and durable room storage are future options for multi-instance presence and matchmaking. Keep service/storage interfaces separable; no mandatory distributed cluster for initial development.
+- Product control plane: Java 21 / Spring Boot WebFlux + Reactor Netty, reactive HTTP/WebSocket and MongoDB Reactive Streams for account persistence; default standalone memory state or opt-in versioned shared MongoDB authority for sessions, rooms and network grants. The shared aggregate is a development consistency baseline; sharding and production load/HA validation are future work. Keep service/storage interfaces separable; no mandatory distributed cluster for initial development.
 - Network Core EX supplies peer transport, encrypted tunnels, NAT traversal, relay, discovery and optional Ethernet. No fork of the network implementation.
 - Room admission issues short-lived, room-scoped peer membership; joining/leaving/revocation updates authoritative snapshots. Separate room networks, default-deny forwarding and no unauthenticated public relay.
 - A game adapter declares discovery mode (L3 unicast, controlled UDP discovery, L2, dedicated server), version constraints, executable path, launch arguments and optional trusted result integration. No generic claim of anti-cheat or reliable win/loss detection.

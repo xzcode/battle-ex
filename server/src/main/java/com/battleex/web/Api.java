@@ -1,6 +1,7 @@
 package com.battleex.web;
 
 import com.battleex.platform.Platform;
+import com.battleex.platform.ClusterAuthority;
 import com.battleex.platform.ReactiveWork;
 import com.battleex.room.RoomDirectory;
 import org.springframework.http.*;
@@ -95,6 +96,11 @@ public final class Api {
         ResponseEntity<Map<String,String>> invalid(IllegalArgumentException e) { return error(HttpStatus.BAD_REQUEST,e); }
         @ExceptionHandler(IllegalStateException.class)
         ResponseEntity<Map<String,String>> conflict(IllegalStateException e) { return error(HttpStatus.CONFLICT,e); }
+        @ExceptionHandler(ClusterAuthority.Unavailable.class)
+        ResponseEntity<Map<String,String>> authorityUnavailable(ClusterAuthority.Unavailable e){
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).header("Retry-After","1")
+                    .body(Map.of("error",e.getMessage()));
+        }
         @ExceptionHandler(RejectedExecutionException.class)
         ResponseEntity<Map<String,String>> busy(RejectedExecutionException e) {
             return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).header("Retry-After","1")
