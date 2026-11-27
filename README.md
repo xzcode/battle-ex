@@ -2,7 +2,9 @@
 
 A self-hostable PC game LAN multiplayer and competitive platform. Shared networking engine: [Network Core EX](https://github.com/xzcode/network-core-ex).
 
-**Status: M0 design; no playable release yet.**
+**Status: M1 room-domain first slice; no playable release yet.**
+
+The Java 21 in-memory room domain and its authorization/lifecycle tests are implemented. See [room and network contract](docs/ROOM_NETWORK_CONTRACT.md). Run `bash scripts/test-room-domain.sh` with JDK 21. Tested successfully on Linux on 2026-11-27. HTTP/WebSocket APIs, account/session authentication, persistence, desktop UI and network integration are not yet implemented.
 
 ## Product scope
 
