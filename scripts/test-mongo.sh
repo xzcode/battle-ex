@@ -32,3 +32,9 @@ else
   export BATTLE_STATE_MODE=memory
   node scripts/test-platform.mjs
 fi
+
+# The cluster outage test intentionally stops its disposable MongoDB. All
+# other fixtures inspect the actual documents before the wrapper cleans up.
+if [[ "${1:-}" != "--cluster" ]]; then
+  docker exec "$name" mongosh --quiet --norc -u battle_test -p "$password" --authenticationDatabase admin "$BATTLE_MONGO_DB" --eval "$(cat scripts/assert-mongo-no-class.js)"
+fi

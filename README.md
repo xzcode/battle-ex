@@ -17,6 +17,8 @@ The [M6–M7 archive and moderation module](docs/M6_M7_ARCHIVE_AND_MODERATION.md
 
 The [M8–M9 community and operations module](docs/M8_M9_COMMUNITY_OPERATIONS.md) adds teams, opt-in 1v1 single-elimination tournaments, role-based operator access, service overview, session/room controls and audit. Tournament adjudication is manual and independent of ranked Elo.
 
+The [MongoDB storage contract](docs/M10_STORAGE_CONTRACT.md) prohibits `_class` type metadata in all persisted collections and governs the M10 collection split.
+
 ## Product scope
 
 Windows-first desktop client (Tauri 2 + Vue 3 + TypeScript), game lobby, private/public rooms, player readiness, invite, local game launch, network diagnostics, regional relay selection and configurable LAN discovery. Initial compatibility targets: Warcraft III, Red Alert 2 and CS 1.6; exact editions and versions require real-game verification. Users supply legally acquired games; no bundled game binaries, keys, assets or unauthorized bypass.

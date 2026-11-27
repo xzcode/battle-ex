@@ -2,7 +2,7 @@ name: Platform business acceptance
 on:
   push:
     branches: [master]
-    paths: ['server/**', 'apps/desktop/src/**', 'apps/desktop/scripts/test-desktop.mjs', 'apps/desktop/package*.json', 'scripts/test-*.mjs', 'scripts/test-mongo.sh', '.github/workflows/platform-test.yml']
+    paths: ['server/**', 'apps/desktop/src/**', 'apps/desktop/scripts/test-desktop.mjs', 'apps/desktop/package*.json', 'scripts/test-*.mjs', 'scripts/test-mongo.sh', 'scripts/assert-mongo-no-class.js', '.github/workflows/platform-test.yml']
   workflow_dispatch:
   workflow_call:
 permissions:
