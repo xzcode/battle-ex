@@ -1,0 +1,72 @@
+[
+  {
+    "id": "warcraft3",
+    "en": "Warcraft III",
+    "zh": "魔兽争霸 III",
+    "short": "W3",
+    "color": "ochre",
+    "executables": [
+      "war3.exe",
+      "Frozen Throne.exe",
+      "Warcraft III.exe"
+    ],
+    "folders": [
+      "Warcraft III",
+      "Warcraft 3",
+      "Warcraft III Frozen Throne"
+    ],
+    "args": [],
+    "discovery": "broadcast-pending",
+    "edition": "Classic / The Frozen Throne candidates; exact builds require acceptance"
+  },
+  {
+    "id": "redalert2",
+    "en": "Red Alert 2",
+    "zh": "红色警戒 2",
+    "short": "RA",
+    "color": "red",
+    "executables": [
+      "RA2.exe",
+      "RA2MD.exe"
+    ],
+    "folders": [
+      "Red Alert 2",
+      "Command & Conquer Red Alert 2",
+      "Command and Conquer Red Alert 2",
+      "Command & Conquer The Ultimate Collection/Red Alert 2"
+    ],
+    "args": [],
+    "discovery": "edition-pending",
+    "edition": "Base game and Yuri’s Revenge are distinct compatibility targets"
+  },
+  {
+    "id": "cs16",
+    "en": "Counter-Strike 1.6",
+    "zh": "反恐精英 1.6",
+    "short": "CS",
+    "color": "blue",
+    "executables": [
+      "hl.exe",
+      "cstrike.exe"
+    ],
+    "folders": [
+      "Counter-Strike",
+      "Counter-Strike 1.6"
+    ],
+    "args": [],
+    "discovery": "manual-ip",
+    "edition": "GoldSrc / Counter-Strike 1.6 candidates; use legitimate installed game"
+  },
+  {
+    "id": "custom",
+    "en": "Custom LAN",
+    "zh": "自定义局域网",
+    "short": "LAN",
+    "color": "teal",
+    "executables": [],
+    "folders": [],
+    "args": [],
+    "discovery": "manual-ip",
+    "edition": "User-selected Windows executable; IPv4 unicast only until verified"
+  }
+]

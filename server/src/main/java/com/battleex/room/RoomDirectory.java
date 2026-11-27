@@ -19,7 +19,19 @@ import java.util.Set;
 public final class RoomDirectory {
     public enum Visibility { PUBLIC, PRIVATE }
     public enum State { WAITING, IN_GAME }
-    public record Member(UUID userId, boolean ready) {}
+    /** Optional, self-reported executable fingerprint. Not a trusted result or anti-cheat proof. */
+    public record GameBuild(String gameId, String sha256, String fileVersion, String architecture) {
+        public GameBuild {
+            if(gameId==null || gameId.isBlank() || gameId.length()>128 ||
+                    sha256==null || !sha256.matches("[a-f0-9]{64}") ||
+                    architecture==null || !Set.of("x86","x64","ARM64").contains(architecture) ||
+                    (fileVersion!=null && !fileVersion.matches("[0-9]{1,5}(\\.[0-9]{1,5}){0,3}")))
+                throw new IllegalArgumentException("invalid game build report");
+        }
+    }
+    public record Member(UUID userId, boolean ready, GameBuild gameBuild) {
+        public Member(UUID userId, boolean ready){this(userId,ready,null);}
+    }
     public record RoomView(UUID id, UUID networkId, String name, String gameId,
                            int capacity, Visibility visibility, UUID host,
                            State state, long revision, long membershipRevision,
@@ -41,6 +53,7 @@ public final class RoomDirectory {
         final int capacity;
         final Visibility visibility;
         final Map<UUID, Boolean> members = new LinkedHashMap<>();
+        final Map<UUID,GameBuild> builds=new HashMap<>();
         UUID host;
         State state = State.WAITING;
         long revision = 1;
@@ -64,7 +77,13 @@ public final class RoomDirectory {
             id=v.id();networkId=v.networkId();name=v.name();gameId=v.gameId();
             capacity=v.capacity();visibility=v.visibility();host=v.host();state=v.state();
             revision=v.revision();membershipRevision=v.membershipRevision();invite=stored.invite();
-            for(Member member:v.members())members.put(member.userId(),member.ready());
+            for(Member member:v.members()){
+                members.put(member.userId(),member.ready());
+                if(member.gameBuild()!=null){
+                    if(!gameId.equals(member.gameBuild().gameId()))throw new IllegalStateException("invalid persisted game build");
+                    builds.put(member.userId(),member.gameBuild());
+                }
+            }
         }
 
         void rotateInvite() {
@@ -73,7 +92,7 @@ public final class RoomDirectory {
 
         RoomView view() {
             List<Member> result = new ArrayList<>();
-            members.forEach((id, ready) -> result.add(new Member(id, ready)));
+            members.forEach((id, ready) -> result.add(new Member(id, ready,builds.get(id))));
             return new RoomView(id, networkId, name, gameId, capacity, visibility,
                     host, state, revision, membershipRevision, result);
         }
@@ -146,6 +165,7 @@ public final class RoomDirectory {
     public synchronized void leave(UUID actor, UUID roomId) {
         Room r = memberRoom(actor, roomId);
         r.members.remove(actor);
+        r.builds.remove(actor);
         active.remove(actor);
         r.membershipChanged();
         if (r.members.isEmpty()) {
@@ -160,6 +180,21 @@ public final class RoomDirectory {
             r.state = State.WAITING;
         }
         if (r.state == State.WAITING) r.resetReady();
+    }
+
+    // Report only the authenticated member's own local build. Reports stay
+    // private to the room and never change the network membership revision.
+    public synchronized RoomView reportGameBuild(UUID actor,UUID roomId,GameBuild build){
+        Room r=memberRoom(actor,roomId);
+        requireWaiting(r);
+        if(build!=null&&!r.gameId.equals(build.gameId()))
+            throw new IllegalArgumentException("game build does not match the room game");
+        if(!Objects.equals(r.builds.get(actor),build)){
+            if(build==null)r.builds.remove(actor);else r.builds.put(actor,build);
+            r.resetReady();
+            r.revision++;
+        }
+        return r.view();
     }
 
     public synchronized RoomView setReady(UUID actor, UUID roomId, boolean ready) {

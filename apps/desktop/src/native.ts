@@ -12,3 +12,13 @@ export function startNetwork(origin:string,token:string,issuer:string,userId:str
 }
 export function stopNetwork(){return invoke<void>('network_stop')}
 export function networkStatus(){return invoke<NetworkStatus>('network_status')}
+
+export type GameInstall={path:string;sha256:string;fileVersion:string|null;architecture:string;size:number;modified:number}
+export type GameEntry={id:string;install:GameInstall|null;state:'configured'|'changed'|'missing'|'unconfigured';pid:number|null;exitCode:number|null}
+export function listGames(){return invoke<GameEntry[]>('game_list')}
+export function detectGame(id:string){return invoke<string[]>('game_detect',{id})}
+export function chooseGame(id:string){return invoke<GameInstall|null>('game_choose',{id})}
+export function adoptGame(id:string,path:string){return invoke<GameInstall|null>('game_adopt',{id,path})}
+export function verifyGame(id:string){return invoke<boolean>('game_verify',{id})}
+export function removeGame(id:string){return invoke<void>('game_remove',{id})}
+export function launchGame(id:string){return invoke<number|null>('game_launch',{id})}

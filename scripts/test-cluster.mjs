@@ -123,6 +123,15 @@ try{
  assert.equal((await api(B,'/lobby',{token:rejected.token})).activeRoom,null)
  await view.wait(v=>v.activeRoom?.members.length===2)
  console.log('PASS: shared sessions, invitations, concurrent last-seat admission and cross-instance WebSocket')
+ const buildA={gameId:'custom',sha256:'c'.repeat(64),fileVersion:'1.2.3.4',architecture:'x86'}
+ const buildB={...buildA,sha256:'d'.repeat(64)}
+ await api(A,'/rooms/'+room.id+'/game-build',{token:a.token,body:{build:buildA}})
+ await api(B,'/rooms/'+room.id+'/game-build',{token:joined.token,body:{build:buildB}})
+ await view.wait(v=>v.activeRoom?.members.every(m=>!!m.gameBuild))
+ assert.equal((await api(A,'/lobby',{token:joined.token})).activeRoom.members.find(m=>m.userId===joined.user.id).gameBuild.sha256,buildB.sha256)
+ await api(B,'/rooms/'+room.id+'/game-build',{token:rejected.token,body:{build:buildA},status:403})
+ console.log('PASS: cross-instance game build reports and non-member denial')
+
  const hb={node:'relay-test',instance:randomBytes(16).toString('hex'),draining:false,stats:{connections:2,ingress_bytes:100,egress_bytes:200,dropped_packets:0}}
  await api(A,'/network/relay/heartbeat',{body:hb,relaySecret:secret})
  assert.equal((await api(B,'/network/relays',{token:a.token}))[0].state,'online')
@@ -153,6 +162,7 @@ try{
  const again=await snapshot(A,a.token)
  assert.equal(again.localIP,sa.localIP);assert.equal(again.revision,sa.revision)
  assert.equal((await api(A,'/lobby',{token:joined.token})).activeRoom.id,room.id)
+ assert.equal((await api(A,'/lobby',{token:joined.token})).activeRoom.members.find(m=>m.userId===joined.user.id).gameBuild.sha256,buildB.sha256)
  console.log('PASS: abrupt JVM loss, surviving instance and restarted instance preserve committed state')
  // Revocation on one instance must immediately affect authorization on the other.
  await api(A,'/logout',{token:a.token,method:'POST',status:204})

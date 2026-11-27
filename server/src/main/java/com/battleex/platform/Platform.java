@@ -152,6 +152,11 @@ public final class Platform {
         rooms.leave(require(token).user().id(), id);
         revision++;
     }
+    public synchronized RoomDirectory.RoomView reportGameBuild(String token,UUID roomId,RoomDirectory.GameBuild build){
+        var result=rooms.reportGameBuild(require(token).user().id(),roomId,build);
+        revision++;
+        return result;
+    }
     public synchronized RoomDirectory.RoomView ready(String token, UUID id, boolean ready) {
         var result = rooms.setReady(require(token).user().id(), id, ready);
         revision++;

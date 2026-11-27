@@ -2,12 +2,12 @@
 
 A self-hostable PC game LAN multiplayer and competitive platform. Shared networking engine: [Network Core EX](https://github.com/xzcode/network-core-ex).
 
-**Status: M3 multi-relay, transport refresh and shared-authority development baseline; no playable release yet.**
+**Status: M4 local game library and build-comparison development baseline; no playable release yet.**
 
 Spring Boot WebFlux / Reactor Netty / Java 21 accounts and lobby, optional reactive MongoDB account persistence,
 Vue 3 desktop UI and a Go agent/relay integrating the pinned Network Core EX
 candidate. Linux isolated real-room direct/relay, isolation and revocation
-tests pass. Multi-relay directory, node heartbeat, automatic migration and quality probes are implemented; see [M3 multi-relay configuration and acceptance](docs/M3_MULTIRELAY.md). Transport-only refresh, hot relay-directory reload and the relay monitor are documented in [M3 refresh and monitoring](docs/M3_PATH_REFRESH_AND_MONITOR.md). Optional shared MongoDB state and multi-instance deployment are documented in [M3.8 shared authority](docs/M3_CLUSTER.md). See [M2 implementation and deployment configuration](docs/M2_IMPLEMENTATION.md)
+tests pass. Multi-relay directory, node heartbeat, automatic migration and quality probes are implemented; see [M3 multi-relay configuration and acceptance](docs/M3_MULTIRELAY.md). Transport-only refresh, hot relay-directory reload and the relay monitor are documented in [M3 refresh and monitoring](docs/M3_PATH_REFRESH_AND_MONITOR.md). Optional shared MongoDB state and multi-instance deployment are documented in [M3.8 shared authority](docs/M3_CLUSTER.md). Local Windows game selection, executable validation, launch adapter and room build comparison are documented in [M4 game library](docs/M4_GAME_LIBRARY.md). See [M2 implementation and deployment configuration](docs/M2_IMPLEMENTATION.md)
 and [M1 implementation](docs/M1_IMPLEMENTATION.md). Windows native adapter,
 Tauri installation, actual games and complex NAT reliability remain acceptance
 gates.

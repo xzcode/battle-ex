@@ -57,6 +57,12 @@ public final class Api {
     Mono<Void> leave(@RequestHeader(value="Authorization", required=false) String auth, @PathVariable UUID id) {
         return work.stateRun(() -> platform.leave(bearer(auth), id));
     }
+    public record GameBuildReport(RoomDirectory.GameBuild build) {}
+    @PostMapping("/rooms/{id}/game-build")
+    Mono<RoomDirectory.RoomView> gameBuild(@RequestHeader(value="Authorization",required=false) String auth,
+                                           @PathVariable UUID id,@RequestBody GameBuildReport report){
+        return work.state(()->platform.reportGameBuild(bearer(auth),id,report.build()));
+    }
     @PostMapping("/rooms/{id}/ready")
     Mono<RoomDirectory.RoomView> ready(@RequestHeader(value="Authorization", required=false) String auth,
                                       @PathVariable UUID id, @RequestBody Ready request) {

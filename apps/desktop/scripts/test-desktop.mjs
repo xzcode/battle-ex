@@ -46,9 +46,12 @@ async function register(page,origin,address,name,password){
   await page.getByLabel('Server address').fill(address)
   await page.getByLabel('Username').fill(name)
   await page.getByLabel('Password',{exact:true}).fill(password)
+  const response=page.waitForResponse(r=>r.url().endsWith('/api/v1/register')&&r.status()===201)
   await page.getByRole('button',{name:'Create account',exact:true}).click()
+  const account=await (await response).json()
   await page.getByRole('heading',{name:'Rooms',exact:true}).waitFor()
   await page.getByText('Live',{exact:true}).waitFor()
+  return account
 }
 async function untilEnabled(locator){
   for(let i=0;i<100;i++){if(await locator.isEnabled())return;await new Promise(r=>setTimeout(r,100))}
@@ -61,8 +64,8 @@ try{
   const b=await browser.newPage({viewport:{width:1280,height:800}})
   const suffix=randomUUID().slice(0,8)
   const pwd='dev-test-'+randomUUID()
-  await register(a,origin,address,'alice_'+suffix,pwd)
-  await register(b,origin,address,'bob_'+suffix,pwd)
+  const accountA=await register(a,origin,address,'alice_'+suffix,pwd)
+  const accountB=await register(b,origin,address,'bob_'+suffix,pwd)
   await a.getByRole('button',{name:/Create room/}).click()
   const dialog=a.locator('.modal')
   await dialog.getByLabel('Room name').fill('Browser LAN test')
@@ -73,6 +76,14 @@ try{
   await row.getByRole('button',{name:'Join',exact:true}).click()
   await b.locator('.room-heading').getByRole('heading',{name:'Browser LAN test'}).waitFor()
   await a.locator('.member').filter({hasText:'bob_'+suffix}).waitFor()
+  const active=await (await fetch(address+'/api/v1/lobby',{headers:{Authorization:'Bearer '+accountA.token}})).json()
+  for(const [account,hash] of [[accountA,'a'],[accountB,'b']]){
+    const response=await fetch(address+'/api/v1/rooms/'+active.activeRoom.id+'/game-build',{method:'POST',headers:{Authorization:'Bearer '+account.token,'Content-Type':'application/json'},body:JSON.stringify({build:{gameId:'custom',sha256:hash.repeat(64),fileVersion:'1.0.0.0',architecture:'x86'}})})
+    assert.equal(response.status,200)
+  }
+  await a.getByText('Executable fingerprints differ; check game versions.',{exact:true}).waitFor()
+  await b.getByText('Executable fingerprints differ; check game versions.',{exact:true}).waitFor()
+
   await a.locator('.room-actions').getByRole('button',{name:'Ready',exact:true}).click()
   await b.locator('.room-actions').getByRole('button',{name:'Ready',exact:true}).click()
   const startButton=a.getByRole('button',{name:'Start match',exact:true})
@@ -84,6 +95,12 @@ try{
   await a.getByRole('button',{name:'中文',exact:true}).click()
   await a.getByRole('heading',{name:'房间列表',exact:true}).waitFor()
   await a.getByRole('button',{name:'English',exact:true}).click()
+  await a.getByRole('button',{name:'Configure / launch game',exact:true}).click()
+  await a.getByRole('heading',{name:'Game library',exact:true}).waitFor()
+  await a.getByRole('heading',{name:'Custom LAN',exact:true}).waitFor()
+  assert(await a.getByRole('button',{name:'Choose executable',exact:true}).isDisabled())
+  assert(await a.getByRole('button',{name:'Launch game',exact:true}).isDisabled())
+  await a.getByRole('button',{name:'All games',exact:true}).click()
   await a.getByRole('button',{name:'Relay monitor',exact:true}).click()
   await a.getByRole('heading',{name:'Relay monitor',exact:true}).waitFor()
   await a.getByText('No relay nodes configured.',{exact:true}).waitFor()
@@ -95,7 +112,7 @@ try{
   assert.equal(await b.locator('.members .member').count(),1)
   await b.getByRole('button',{name:'Leave',exact:true}).click()
   await b.getByRole('heading',{name:'You have not joined a room',exact:true}).waitFor()
-  console.log('PASS: built Vue UI against real Spring Boot server: two browser sessions, room creation/join, live readiness, start/end, language toggle, logout and host transfer')
+  console.log('PASS: built Vue UI against real Spring Boot server: two browser sessions, room creation/join, live readiness, start/end, language toggle, build mismatch, game library navigation, logout and host transfer')
 }finally{
   if(browser)await browser.close()
   if(backend&&backend.exitCode===null&&backend.signalCode===null){

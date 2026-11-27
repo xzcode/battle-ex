@@ -1,7 +1,8 @@
 export type User={id:string;username:string}
 export type RoomState='WAITING'|'IN_GAME'
 export type Visibility='PUBLIC'|'PRIVATE'
-export type Member={userId:string;ready:boolean}
+export type GameBuild={gameId:string;sha256:string;fileVersion:string|null;architecture:string}
+export type Member={userId:string;ready:boolean;gameBuild?:GameBuild|null}
 export type RoomSummary={id:string;name:string;gameId:string;capacity:number;occupancy:number;state:RoomState}
 export type Room={id:string;networkId:string;name:string;gameId:string;capacity:number;visibility:Visibility;host:string;state:RoomState;revision:number;membershipRevision:number;members:Member[]}
 export type Lobby={user:User;revision:number;signedInUsers:number;rooms:RoomSummary[];activeRoom:Room|null;memberNames:Record<string,string>}
