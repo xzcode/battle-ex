@@ -72,7 +72,7 @@ public final class ClusterAuthority implements SmartInitializingSingleton, Dispo
     @Override public void afterSingletonsInstantiated(){
         if(!enabled)return;
         Platform platform=platforms.getObject();NetworkAuthority network=networks.getObject();
-        fingerprint=network.configurationFingerprint();
+        fingerprint=network.configurationFingerprint()+platform.competitionFingerprint();
         String payload;
         synchronized(platform){payload=encode(platform,network);}
         // Startup only. An existing authority must match the exact schema and

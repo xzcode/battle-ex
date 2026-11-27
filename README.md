@@ -2,7 +2,7 @@
 
 A self-hostable PC game LAN multiplayer and competitive platform. Shared networking engine: [Network Core EX](https://github.com/xzcode/network-core-ex).
 
-**Status: M4 Windows-native packaging and synthetic SCM/Wintun network acceptance passed; actual commercial-game acceptance remains open. No stable release yet.**
+**Status: M5 1v1 matchmaking and signed-result rating baseline; Windows native packaging/network acceptance passed, actual commercial-game acceptance open. No stable release yet.**
 
 Spring Boot WebFlux / Reactor Netty / Java 21 accounts and lobby, optional reactive MongoDB account persistence,
 Vue 3 desktop UI and a Go agent/relay integrating the pinned Network Core EX
@@ -10,6 +10,8 @@ candidate. Linux isolated real-room direct/relay, isolation and revocation
 tests pass. Multi-relay directory, node heartbeat, automatic migration and quality probes are implemented; see [M3 multi-relay configuration and acceptance](docs/M3_MULTIRELAY.md). Transport-only refresh, hot relay-directory reload and the relay monitor are documented in [M3 refresh and monitoring](docs/M3_PATH_REFRESH_AND_MONITOR.md). Optional shared MongoDB state and multi-instance deployment are documented in [M3.8 shared authority](docs/M3_CLUSTER.md). Local Windows game selection, executable validation, launch adapter and room build comparison are documented in [M4 game library](docs/M4_GAME_LIBRARY.md). The [M4 network service and game discovery](docs/M4_NETWORK_SERVICE_AND_DISCOVERY.md) adds a Windows x64 network-service kit, experimental room-scoped UDP discovery and a CS peer join adapter. See [M2 implementation and deployment configuration](docs/M2_IMPLEMENTATION.md)
 and [M1 implementation](docs/M1_IMPLEMENTATION.md). Windows x64 native SCM/Wintun and WSS UDP acceptance passed in GitHub Actions; actual desktop install/uninstall, two real Windows game clients and complex NAT reliability remain acceptance gates.
 
+
+The [M5 competition module](docs/M5_COMPETITION.md) adds game/mode queues, managed match rooms, signed-result Elo, rankings and personal match history. Ranked play is disabled until a trusted external result issuer is configured.
 
 ## Product scope
 

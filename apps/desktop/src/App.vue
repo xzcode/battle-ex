@@ -4,6 +4,8 @@ import {ApiError,lobbySocket,request,serverOrigin,type Lobby,type Login,type Roo
 import {messages,type Language,type Message} from './i18n'
 import RelayMonitor from './RelayMonitor.vue'
 import GameLibrary from './GameLibrary.vue'
+import Competition from './Competition.vue'
+import './competition.css'
 import games from '../game-catalog.json'
 import './game-library.css'
 import {nativeAvailable,startNetwork,stopNetwork,networkStatus,type NetworkInfo,type NetworkStatus} from './native'
@@ -15,13 +17,15 @@ const gameName=(id:string)=>games.find(g=>g.id===id)?.[language.value]||id
 const endpoint=ref(localStorage.getItem('battle.server')||'http://127.0.0.1:8080')
 const origin=ref(''),username=ref(''),password=ref(''),register=ref(false),token=ref('')
 const busy=ref(false),error=ref(''),connected=ref(false),lobby=ref<Lobby|null>(null)
-const view=ref<'lobby'|'relays'|'games'>('lobby')
+const view=ref<'lobby'|'relays'|'games'|'competition'>('lobby')
 const libraryGame=ref('warcraft3')
 const filter=ref('all'),search=ref(''),modal=ref<'create'|'join'|null>(null)
 const roomName=ref(''),gameId=ref('custom'),capacity=ref(8),visibility=ref<Visibility>('PUBLIC')
 const joinId=ref(''),joinCode=ref(''),invitation=ref(''),copied=ref(false)
 let ws:WebSocket|null=null, timer:ReturnType<typeof setTimeout>|null=null
 const room=computed(()=>lobby.value?.activeRoom||null)
+const queued=computed(()=>!!lobby.value?.competition?.ticket)
+const managedMatch=computed(()=>lobby.value?.competition?.match??null)
 const me=computed(()=>lobby.value?.user.id||'')
 const host=computed(()=>!!room.value&&room.value.host===me.value)
 const netInfo=ref<NetworkInfo|null>(null),netStatus=ref<NetworkStatus>({state:'idle',peers:[]})
@@ -98,7 +102,11 @@ async function api<T>(path:string,method='GET',body?:unknown):Promise<T>{
  catch(e){if(e instanceof ApiError&&e.status===401&&token.value===current)reset(t('noLogin'));throw e}
 }
 function applyLobby(next:Lobby){
- if(!lobby.value||next.revision>=lobby.value.revision)lobby.value=next
+ if(!lobby.value||next.revision>=lobby.value.revision){
+  const oldMatch=lobby.value?.competition?.match?.id
+  lobby.value=next
+  if(next.competition?.match&&next.competition.match.id!==oldMatch){view.value='lobby';filter.value='all';modal.value=null}
+ }
 }
 async function refresh(){
  if(!token.value)return
@@ -188,6 +196,7 @@ onBeforeUnmount(()=>{if(netPoll)clearInterval(netPoll);reset();networkReconcile(
    <div class="brand"><div class="brand-mark">B<span>×</span></div><span>Battle EX</span></div>
    <div class="side-caption">{{t('lobby')}}</div>
    <button class="side-item" :class="{selected:view==='lobby'&&filter==='all'}" @click="view='lobby';filter='all'"><span class="side-glyph" aria-hidden="true">▦</span>{{t('all')}}</button>
+   <button class="side-item" :class="{selected:view==='competition'}" @click="view='competition'"><span class="side-glyph" aria-hidden="true">◎</span>{{language==='zh'?'匹配与排行':'Matchmaking'}} <span v-if="queued" class="state waiting">{{language==='zh'?'排队':'Queued'}}</span></button>
    <div class="side-caption">{{t('gameCatalog')}}</div>
    <button v-for="g in games" :key="g.id" class="side-item" :class="{selected:view==='lobby'&&filter===g.id}" @click="view='lobby';filter=g.id"><span class="game-icon" :class="g.color">{{g.short}}</span><span>{{gameName(g.id)}}</span></button>
    <button class="side-item" :class="{selected:view==='games'}" @click="openLibrary()"><span class="side-glyph" aria-hidden="true">▣</span>{{language==='zh'?'本地游戏库':'Game library'}}</button>
@@ -196,19 +205,21 @@ onBeforeUnmount(()=>{if(netPoll)clearInterval(netPoll);reset();networkReconcile(
    <div class="side-bottom"><div class="side-note">{{t('adapterNote')}}</div><div class="version">v0.1 · {{t('devBuild')}}</div></div>
   </aside>
   <main class="workspace">
-   <header class="topbar"><div class="crumb">{{t('lobby')}} <span> / </span> {{view==='games'?(language==='zh'?'本地游戏库':'Game library'):view==='relays'?(language==='zh'?'中继节点监控':'Relay monitor'):filter==='all'?t('all'):gameName(filter)}}</div>
+   <header class="topbar"><div class="crumb">{{t('lobby')}} <span> / </span> {{view==='competition'?(language==='zh'?'匹配与排行':'Matchmaking'):view==='games'?(language==='zh'?'本地游戏库':'Game library'):view==='relays'?(language==='zh'?'中继节点监控':'Relay monitor'):filter==='all'?t('all'):gameName(filter)}}</div>
     <div class="top-actions"><span class="connection"><i :class="{online:connected}"></i>{{connected?t('live'):t('reconnecting')}}</span><button class="quiet" @click="toggleLanguage">{{t('language')}}</button><div class="user-avatar">{{lobby.user.username.slice(0,1).toUpperCase()}}</div><span class="username">{{lobby.user.username}}</span><button class="quiet" :disabled="busy" @click="signOut">{{t('signOut')}}</button></div>
    </header>
    <RelayMonitor v-if="view==='relays'" :origin="origin" :token="token" :language="language"/>
    <GameLibrary v-else-if="view==='games'" :language="language" :initial-game="libraryGame" :room-game="room?.gameId" :room-id="room?.id" :room-state="room?.state" :reported-build="reportedBuild" :publish-build="publishBuild" :network-ready="networkReady" :network-peers="netStatus.peers||[]" :member-names="lobby.memberNames"/>
+   <Competition v-else-if="view==='competition'" :origin="origin" :token="token" :language="language" :competition="lobby.competition" :active-room="!!room" :user-id="me" :revision="lobby.revision" :refresh-lobby="refresh" :open-room="()=>{view='lobby';filter='all'}"/>
    <div v-else class="workspace-body">
     <div class="main-panel">
-     <div class="headline"><div><div class="eyebrow">BATTLE EX / LOBBY</div><h1>{{t('rooms')}}</h1><p class="muted">{{lobby.rooms.length}} {{t('roomCount')}} · {{lobby.signedInUsers}} {{t('signedIn')}}</p></div><button class="primary" :disabled="!!room||busy" @click="openCreate">＋ {{t('create')}}</button></div>
-     <div class="toolbar"><input v-model="search" class="search" type="search" :placeholder="t('search')"><button class="secondary" :disabled="busy" @click="perform(refresh)">↻ {{t('refresh')}}</button><button class="secondary" :disabled="!!room||busy" @click="openJoin">{{t('privateJoin')}}</button></div>
+     <div class="headline"><div><div class="eyebrow">BATTLE EX / LOBBY</div><h1>{{t('rooms')}}</h1><p class="muted">{{lobby.rooms.length}} {{t('roomCount')}} · {{lobby.signedInUsers}} {{t('signedIn')}}</p></div><button class="primary" :disabled="!!room||busy||queued" @click="openCreate">＋ {{t('create')}}</button></div>
+     <div class="toolbar"><input v-model="search" class="search" type="search" :placeholder="t('search')"><button class="secondary" :disabled="busy" @click="perform(refresh)">↻ {{t('refresh')}}</button><button class="secondary" :disabled="!!room||busy||queued" @click="openJoin">{{t('privateJoin')}}</button></div>
+     <div v-if="queued" class="game-note">{{language==='zh'?'正在匹配，请取消匹配后再创建或加入其他房间。':'Matchmaking is active. Cancel the queue before creating or joining another room.'}} <button class="link" @click="view='competition'">{{language==='zh'?'查看匹配':'View queue'}}</button></div>
      <div v-if="error" class="error banner" role="alert">{{error}}</div>
      <div class="room-list">
       <table><thead><tr><th>{{t('room')}}</th><th>{{t('game')}}</th><th>{{t('players')}}</th><th>{{t('status')}}</th><th></th></tr></thead><tbody>
-       <tr v-for="r in filtered" :key="r.id"><td><strong>{{r.name}}</strong></td><td>{{gameName(r.gameId)}}</td><td class="numbers">{{r.occupancy}} / {{r.capacity}}</td><td><span class="state" :class="r.state==='IN_GAME'?'playing':'waiting'">{{r.state==='IN_GAME'?t('playing'):t('waiting')}}</span></td><td><button class="secondary small-button" :disabled="busy||!!room||r.state==='IN_GAME'||r.occupancy>=r.capacity" @click="joinRoom(r.id)">{{t('join')}}</button></td></tr>
+       <tr v-for="r in filtered" :key="r.id"><td><strong>{{r.name}}</strong></td><td>{{gameName(r.gameId)}}</td><td class="numbers">{{r.occupancy}} / {{r.capacity}}</td><td><span class="state" :class="r.state==='IN_GAME'?'playing':'waiting'">{{r.state==='IN_GAME'?t('playing'):t('waiting')}}</span></td><td><button class="secondary small-button" :disabled="busy||!!room||queued||r.state==='IN_GAME'||r.occupancy>=r.capacity" @click="joinRoom(r.id)">{{t('join')}}</button></td></tr>
       </tbody></table>
       <div v-if="!filtered.length" class="empty"><div class="empty-icon">▦</div><h3>{{t('noRooms')}}</h3><p>{{t('noRoomsBody')}}</p></div>
      </div>
@@ -218,12 +229,13 @@ onBeforeUnmount(()=>{if(netPoll)clearInterval(netPoll);reset();networkReconcile(
      <div v-if="!room" class="empty room-empty"><div class="empty-icon">◈</div><h3>{{t('noActive')}}</h3><p>{{t('noActiveBody')}}</p></div>
      <template v-else>
       <div class="room-heading"><div class="eyebrow">{{gameName(room.gameId)}}</div><h2>{{room.name}}</h2><span class="state" :class="room.state==='IN_GAME'?'playing':'waiting'">{{room.state==='IN_GAME'?t('playing'):t('waiting')}}</span></div>
+      <div v-if="managedMatch" class="competition-room-note">{{managedMatch.mode==='RANKED'?(language==='zh'?'排位 1v1 · 可信结果结算':'Ranked 1v1 · signed results only'):(language==='zh'?'休闲 1v1 · 不计分':'Casual 1v1 · unrated')}}<code>{{managedMatch.id}}</code></div>
       <div class="member-header">{{t('players')}} <span>{{room.members.length}} / {{room.capacity}}</span></div>
       <div class="members"><div v-for="m in room.members" :key="m.userId" class="member"><span class="user-avatar">{{(lobby.memberNames[m.userId]||'?')[0].toUpperCase()}}</span><div class="member-name"><strong>{{lobby.memberNames[m.userId]||m.userId}}</strong><small v-if="m.userId===room.host">{{t('host')}}</small><small v-if="m.gameBuild" :title="m.gameBuild.sha256">{{m.gameBuild.fileVersion||'—'}} · {{m.gameBuild.architecture}} · {{m.gameBuild.sha256.slice(0,8)}}</small><small v-else>{{language==='zh'?'版本未上报':'Build unknown'}}</small></div><span class="state" :class="m.ready?'waiting':'idle'">{{m.ready?t('ready'):t('notReady')}}</span></div></div>
       <div class="room-build-summary" :class="{mismatch:buildMismatch}">{{buildSummary}}</div>
       <div class="room-actions"><button v-if="room.state==='WAITING'" class="primary full" :disabled="busy" @click="action('ready',{ready:!myReady})">{{myReady?t('notReady'):t('ready')}}</button>
       <button v-if="host&&room.state==='WAITING'" class="secondary full" :disabled="busy||!canStart" @click="action('start')">{{t('start')}}</button><button v-if="host&&room.state==='IN_GAME'" class="secondary full" :disabled="busy" @click="action('finish')">{{t('finish')}}</button>
-      <div v-if="host&&room.visibility==='PRIVATE'" class="invitation"><div class="label-row">{{t('invite')}}<button v-if="!invitation" class="link" @click="reveal()">{{t('reveal')}}</button><button v-else class="link" @click="reveal(true)">{{t('rotate')}}</button></div><template v-if="invitation"><label>{{t('roomId')}}<input :value="room.id" readonly></label><label>{{t('inviteCode')}}<input :value="invitation" readonly></label><button class="secondary full" @click="copyInvite">{{copied?t('copied'):t('copy')}}</button></template></div>
+      <div v-if="host&&room.visibility==='PRIVATE'&&!managedMatch" class="invitation"><div class="label-row">{{t('invite')}}<button v-if="!invitation" class="link" @click="reveal()">{{t('reveal')}}</button><button v-else class="link" @click="reveal(true)">{{t('rotate')}}</button></div><template v-if="invitation"><label>{{t('roomId')}}<input :value="room.id" readonly></label><label>{{t('inviteCode')}}<input :value="invitation" readonly></label><button class="secondary full" @click="copyInvite">{{copied?t('copied'):t('copy')}}</button></template></div>
       <button v-if="games.some(g=>g.id===room?.gameId)" class="secondary full" @click="openLibrary(room.gameId)">{{language==='zh'?'配置 / 启动游戏':'Configure / launch game'}}</button>
       <p class="room-game-tip">{{language==='zh'?'房间状态与游戏进程独立；启动需本机确认。':'Room state and game process are separate; launch requires local confirmation.'}}</p>
       <button class="secondary full danger" :disabled="busy" @click="action('leave')">{{t('leave')}}</button></div>

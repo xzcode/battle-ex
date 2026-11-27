@@ -5,7 +5,7 @@ export type GameBuild={gameId:string;sha256:string;fileVersion:string|null;archi
 export type Member={userId:string;ready:boolean;gameBuild?:GameBuild|null}
 export type RoomSummary={id:string;name:string;gameId:string;capacity:number;occupancy:number;state:RoomState}
 export type Room={id:string;networkId:string;name:string;gameId:string;capacity:number;visibility:Visibility;host:string;state:RoomState;revision:number;membershipRevision:number;members:Member[]}
-export type Lobby={user:User;revision:number;signedInUsers:number;rooms:RoomSummary[];activeRoom:Room|null;memberNames:Record<string,string>}
+export type Lobby={user:User;revision:number;signedInUsers:number;rooms:RoomSummary[];activeRoom:Room|null;memberNames:Record<string,string>;competition?:CompetitionView}
 export type Login={token:string;expiresAt:string;user:User}
 export class ApiError extends Error {constructor(public status:number,message:string){super(message)}}
 export function serverOrigin(raw:string):string{
@@ -36,3 +36,10 @@ export function lobbySocket(origin:string,token:string,receive:(lobby:Lobby)=>vo
   ws.onerror=()=>{ws.close()}
   return ws
 }
+
+
+export type MatchMode='CASUAL'|'RANKED'
+export type MatchRecord={id:string;roomId:string;gameId:string;mode:MatchMode;players:User[];state:string;createdAt:number;startedAt:number|null;endedAt:number|null;resultDeadline:number|null;outcome:'WIN'|'DRAW'|null;winnerId:string|null;ratingChanges:{userId:string;before:number;after:number}[]}
+export type CompetitionView={ticket:{user:User;gameId:string;mode:MatchMode;queuedAt:number}|null;match:MatchRecord|null;awaitingResult:MatchRecord|null;rankedGames:string[]}
+export type Leaderboard={gameId:string;offset:number;total:number;entries:{rank:number;rating:{gameId:string;user:User;points:number;played:number;wins:number;draws:number;losses:number}}[]}
+export type MatchHistory={offset:number;total:number;entries:MatchRecord[]}

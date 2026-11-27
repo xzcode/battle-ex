@@ -228,6 +228,12 @@ public final class RoomDirectory {
         return r.view();
     }
 
+    // Internal managed-match teardown. The platform owns authorization.
+    public synchronized void closeManaged(UUID roomId){
+        Room r=rooms.remove(roomId);
+        if(r!=null)for(UUID user:r.members.keySet())active.remove(user,roomId);
+    }
+
     public synchronized RoomView byNetwork(UUID network) {
         for (Room r : rooms.values()) if (r.networkId.equals(network)) return r.view();
         return null;

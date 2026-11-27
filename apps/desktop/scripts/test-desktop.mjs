@@ -115,6 +115,33 @@ try{
   assert.equal(await b.locator('.members .member').count(),1)
   await b.getByRole('button',{name:'Leave',exact:true}).click()
   await b.getByRole('heading',{name:'You have not joined a room',exact:true}).waitFor()
+  // Two real browser clients exercise the server-owned matchmaking flow.
+  await register(a,origin,address,'match_'+suffix,pwd)
+  for(const page of [a,b]){
+    await page.getByRole('button',{name:'Matchmaking',exact:true}).click()
+    await page.getByRole('heading',{name:'Matchmaking',exact:true}).waitFor()
+    assert(await page.locator('option[value="RANKED"]').isDisabled())
+  }
+  await a.getByRole('button',{name:'Find match',exact:true}).click()
+  await a.getByRole('heading',{name:'Searching for an opponent',exact:true}).waitFor()
+  await a.getByRole('button',{name:'Cancel matchmaking',exact:true}).click()
+  await a.getByRole('button',{name:'Find match',exact:true}).click()
+  await b.getByRole('button',{name:'Find match',exact:true}).click()
+  for(const page of [a,b]){
+    await page.locator('.room-heading').getByRole('heading',{name:'Casual 1v1',exact:true}).waitFor()
+    await page.locator('.room-actions').getByRole('button',{name:'Ready',exact:true}).click()
+  }
+  const matchHost=await a.getByRole('button',{name:'Start match',exact:true}).count()?a:b
+  const startMatched=matchHost.getByRole('button',{name:'Start match',exact:true})
+  await untilEnabled(startMatched);await startMatched.click()
+  await matchHost.getByRole('button',{name:'End session',exact:true}).click()
+  for(const page of [a,b]){
+    await page.getByRole('heading',{name:'You have not joined a room',exact:true}).waitFor()
+    await page.getByRole('button',{name:'Matchmaking',exact:true}).click()
+    await page.getByRole('button',{name:'My match history',exact:true}).click()
+    await page.getByText('Finished · unrated',{exact:true}).waitFor()
+  }
+  console.log('PASS: browser matchmaking, queue cancellation, assigned room, match lifecycle and unrated history')
   console.log('PASS: built Vue UI against real Spring Boot server: two browser sessions, room creation/join, live readiness, start/end, language toggle, build mismatch, game library navigation, logout and host transfer')
 }finally{
   if(browser)await browser.close()
