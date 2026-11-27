@@ -1,11 +1,15 @@
 package com.battleex.web;
 
 import com.battleex.platform.Platform;
+import com.battleex.platform.ReactiveWork;
 import com.battleex.room.RoomDirectory;
 import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Mono;
+
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.RejectedExecutionException;
 
 @RestController
 @RequestMapping("/api/v1")
@@ -16,58 +20,65 @@ public final class Api {
     public record Ready(Boolean ready) {}
 
     private final Platform platform;
-    public Api(Platform platform) { this.platform = platform; }
+    private final ReactiveWork work;
+    public Api(Platform platform, ReactiveWork work) { this.platform = platform; this.work = work; }
 
     @PostMapping("/register") @ResponseStatus(HttpStatus.CREATED)
-    Platform.Login register(@RequestBody Credentials request) {
+    Mono<Platform.Login> register(@RequestBody Credentials request) {
         return platform.register(request.username(), request.password());
     }
     @PostMapping("/login")
-    Platform.Login login(@RequestBody Credentials request) {
+    Mono<Platform.Login> login(@RequestBody Credentials request) {
         return platform.login(request.username(), request.password());
     }
     @PostMapping("/logout") @ResponseStatus(HttpStatus.NO_CONTENT)
-    void logout(@RequestHeader(value="Authorization", required=false) String auth) { platform.logout(bearer(auth)); }
+    Mono<Void> logout(@RequestHeader(value="Authorization", required=false) String auth) {
+        return work.stateRun(() -> platform.logout(bearer(auth)));
+    }
     @GetMapping("/lobby")
-    Platform.Lobby lobby(@RequestHeader(value="Authorization", required=false) String auth) {
-        return platform.lobby(bearer(auth));
+    Mono<Platform.Lobby> lobby(@RequestHeader(value="Authorization", required=false) String auth) {
+        return work.state(() -> platform.lobby(bearer(auth)));
     }
     @PostMapping("/rooms") @ResponseStatus(HttpStatus.CREATED)
-    RoomDirectory.RoomView create(@RequestHeader(value="Authorization", required=false) String auth,
-                                  @RequestBody CreateRoom room) {
-        if (room.visibility() == null) throw new IllegalArgumentException("room visibility required");
-        return platform.create(bearer(auth),room.name(),room.gameId(),room.capacity(),room.visibility());
+    Mono<RoomDirectory.RoomView> create(@RequestHeader(value="Authorization", required=false) String auth,
+                                       @RequestBody CreateRoom room) {
+        return work.state(() -> {
+            if (room.visibility() == null) throw new IllegalArgumentException("room visibility required");
+            return platform.create(bearer(auth),room.name(),room.gameId(),room.capacity(),room.visibility());
+        });
     }
     @PostMapping("/rooms/{id}/join")
-    RoomDirectory.RoomView join(@RequestHeader(value="Authorization", required=false) String auth,
+    Mono<RoomDirectory.RoomView> join(@RequestHeader(value="Authorization", required=false) String auth,
                     @PathVariable UUID id, @RequestBody(required=false) JoinRoom request) {
-        return platform.join(bearer(auth), id, request == null ? null : request.invite());
+        return work.state(() -> platform.join(bearer(auth), id, request == null ? null : request.invite()));
     }
     @PostMapping("/rooms/{id}/leave") @ResponseStatus(HttpStatus.NO_CONTENT)
-    void leave(@RequestHeader(value="Authorization", required=false) String auth, @PathVariable UUID id) {
-        platform.leave(bearer(auth), id);
+    Mono<Void> leave(@RequestHeader(value="Authorization", required=false) String auth, @PathVariable UUID id) {
+        return work.stateRun(() -> platform.leave(bearer(auth), id));
     }
     @PostMapping("/rooms/{id}/ready")
-    RoomDirectory.RoomView ready(@RequestHeader(value="Authorization", required=false) String auth,
-                                  @PathVariable UUID id, @RequestBody Ready request) {
-        if (request.ready() == null) throw new IllegalArgumentException("ready required");
-        return platform.ready(bearer(auth), id, request.ready());
+    Mono<RoomDirectory.RoomView> ready(@RequestHeader(value="Authorization", required=false) String auth,
+                                      @PathVariable UUID id, @RequestBody Ready request) {
+        return work.state(() -> {
+            if (request.ready() == null) throw new IllegalArgumentException("ready required");
+            return platform.ready(bearer(auth), id, request.ready());
+        });
     }
     @PostMapping("/rooms/{id}/start")
-    RoomDirectory.RoomView start(@RequestHeader(value="Authorization", required=false) String auth, @PathVariable UUID id) {
-        return platform.start(bearer(auth),id);
+    Mono<RoomDirectory.RoomView> start(@RequestHeader(value="Authorization", required=false) String auth, @PathVariable UUID id) {
+        return work.state(() -> platform.start(bearer(auth),id));
     }
     @PostMapping("/rooms/{id}/finish")
-    RoomDirectory.RoomView finish(@RequestHeader(value="Authorization", required=false) String auth, @PathVariable UUID id) {
-        return platform.finish(bearer(auth),id);
+    Mono<RoomDirectory.RoomView> finish(@RequestHeader(value="Authorization", required=false) String auth, @PathVariable UUID id) {
+        return work.state(() -> platform.finish(bearer(auth),id));
     }
     @GetMapping("/rooms/{id}/invitation")
-    Map<String,String> invitation(@RequestHeader(value="Authorization", required=false) String auth, @PathVariable UUID id) {
-        return Map.of("invite", platform.invitation(bearer(auth),id,false));
+    Mono<Map<String,String>> invitation(@RequestHeader(value="Authorization", required=false) String auth, @PathVariable UUID id) {
+        return work.state(() -> Map.of("invite", platform.invitation(bearer(auth),id,false)));
     }
     @PostMapping("/rooms/{id}/invitation")
-    Map<String,String> rotate(@RequestHeader(value="Authorization", required=false) String auth, @PathVariable UUID id) {
-        return Map.of("invite", platform.invitation(bearer(auth),id,true));
+    Mono<Map<String,String>> rotate(@RequestHeader(value="Authorization", required=false) String auth, @PathVariable UUID id) {
+        return work.state(() -> Map.of("invite", platform.invitation(bearer(auth),id,true)));
     }
     static String bearer(String header) {
         if (header == null || !header.startsWith("Bearer ")) throw new Platform.Unauthorized();
@@ -84,6 +95,11 @@ public final class Api {
         ResponseEntity<Map<String,String>> invalid(IllegalArgumentException e) { return error(HttpStatus.BAD_REQUEST,e); }
         @ExceptionHandler(IllegalStateException.class)
         ResponseEntity<Map<String,String>> conflict(IllegalStateException e) { return error(HttpStatus.CONFLICT,e); }
+        @ExceptionHandler(RejectedExecutionException.class)
+        ResponseEntity<Map<String,String>> busy(RejectedExecutionException e) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).header("Retry-After","1")
+                    .body(Map.of("error","server busy; retry later"));
+        }
         private ResponseEntity<Map<String,String>> error(HttpStatus code, RuntimeException e) {
             return ResponseEntity.status(code).body(Map.of("error", e.getMessage() == null ? code.getReasonPhrase() : e.getMessage()));
         }

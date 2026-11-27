@@ -22,7 +22,7 @@ async function start() {
     const done = (err)=>{clearTimeout(timer);err?reject(err):resolve()}
     const read = chunk=>{
       logs = (logs + chunk.toString()).slice(-16000)
-      const match = logs.match(/Tomcat started on port (\d+)/)
+      const match = logs.match(/Netty started on port (\d+)/)
       if (match && /Started BattleApplication/.test(logs)) {base='http://127.0.0.1:'+match[1];done()}
     }
     server.stdout.on('data',read); server.stderr.on('data',read)

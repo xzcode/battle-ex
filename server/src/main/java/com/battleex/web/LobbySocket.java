@@ -1,92 +1,90 @@
 package com.battleex.web;
 
 import com.battleex.platform.Platform;
+import com.battleex.platform.ReactiveWork;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.web.socket.*;
-import org.springframework.web.socket.handler.ConcurrentWebSocketSessionDecorator;
-import org.springframework.web.socket.handler.TextWebSocketHandler;
+import org.springframework.web.reactive.socket.*;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
-import java.io.IOException;
+import java.time.Duration;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeoutException;
 
-/** First message authenticates; never put tokens in URL or logs. Full snapshots simplify reconnect. */
+/**
+ * Reactive WebSocket: one receive stream and one send stream per connection.
+ * First frame authenticates; subsequent inbound commands are forbidden.
+ * A slow client coalesces periodic ticks instead of accumulating an unbounded queue.
+ */
 @Component
-public final class LobbySocket extends TextWebSocketHandler {
+public final class LobbySocket implements WebSocketHandler {
     private final Platform platform;
     private final ObjectMapper json;
-    private final Map<String, Client> clients = new ConcurrentHashMap<>();
+    private final ReactiveWork work;
 
-    private static final class Client {
-        final WebSocketSession socket;
-        final long acceptedAt = System.nanoTime();
-        String token;
-        Platform.Lobby last;
-        Client(WebSocketSession socket) {
-            this.socket = new ConcurrentWebSocketSessionDecorator(socket, 5000, 512 * 1024);
+    private static final class InvalidFrame extends RuntimeException {}
+
+    public LobbySocket(Platform platform, ObjectMapper json, ReactiveWork work) {
+        this.platform = platform;
+        this.json = json;
+        this.work = work;
+    }
+
+    @Override public Mono<Void> handle(WebSocketSession session) {
+        return session.receive()
+                .map(message -> {
+                    // Copy to immutable text synchronously while Netty owns the frame.
+                    if (message.getType() != WebSocketMessage.Type.TEXT ||
+                            message.getPayload().readableByteCount() > 2048) throw new InvalidFrame();
+                    return message.getPayloadAsText();
+                })
+                .timeout(Mono.delay(Duration.ofSeconds(5)), ignored -> Mono.never())
+                .switchOnFirst((first, inbound) -> {
+                    if (first.isOnError()) return inbound.then();
+                    if (!first.hasValue()) return Mono.<Void>empty();
+                    return work.state(() -> authenticate(first.get()))
+                            .flatMap(token -> {
+                                Flux<WebSocketMessage> outbound = Flux.interval(Duration.ZERO, Duration.ofSeconds(1))
+                                        .onBackpressureLatest()
+                                        .concatMap(tick -> work.state(() -> platform.lobby(token)), 1)
+                                        .distinctUntilChanged()
+                                        .concatMap(lobby -> work.state(() -> json.writeValueAsString(
+                                                Map.of("type","lobby","data",lobby))), 1)
+                                        .map(session::textMessage);
+
+                                // The replayed first frame is skipped. Receiving any further
+                                // command is a protocol violation; disconnect cancels sending.
+                                Mono<Void> inboundDone = inbound.skip(1).next()
+                                        .flatMap(ignored -> Mono.<Void>error(new InvalidFrame()));
+                                return Mono.firstWithSignal(session.send(outbound), inboundDone);
+                            });
+                })
+                .then()
+                .onErrorResume(Platform.Unauthorized.class, e -> session.close(CloseStatus.POLICY_VIOLATION))
+                .onErrorResume(InvalidFrame.class, e -> session.close(CloseStatus.POLICY_VIOLATION))
+                .onErrorResume(TimeoutException.class, e -> session.close(CloseStatus.POLICY_VIOLATION))
+                .onErrorResume(e -> session.close(CloseStatus.SERVER_ERROR));
+    }
+
+    private String authenticate(String text) {
+        try {
+            var node = json.readTree(text);
+            if (node == null || !"authenticate".equals(node.path("type").asText()) ||
+                    !node.path("token").isTextual()) throw new InvalidFrame();
+            String token = node.get("token").asText();
+            platform.authenticate(token);
+            return token;
+        } catch (Platform.Unauthorized e) {
+            throw e;
+        } catch (Exception e) {
+            throw new InvalidFrame();
         }
     }
-    public LobbySocket(Platform platform, ObjectMapper json) { this.platform = platform; this.json = json; }
 
-    @Override public void afterConnectionEstablished(WebSocketSession socket) {
-        socket.setTextMessageSizeLimit(2048);
-        clients.put(socket.getId(), new Client(socket));
-    }
-    @Override protected void handleTextMessage(WebSocketSession socket, TextMessage message) {
-        Client c = clients.get(socket.getId());
-        if (c == null) return;
-        synchronized (c) {
-            try {
-                if (c.token != null || System.nanoTime()-c.acceptedAt > 5_000_000_000L) {
-                    close(c, CloseStatus.POLICY_VIOLATION); return;
-                }
-                var node = json.readTree(message.getPayload());
-                if (!"authenticate".equals(node.path("type").asText()) || !node.path("token").isTextual()) {
-                    close(c, CloseStatus.POLICY_VIOLATION); return;
-                }
-                String token = node.get("token").asText();
-                platform.authenticate(token);
-                c.token = token;
-                send(c, platform.lobby(token));
-            } catch (Exception e) { close(c, CloseStatus.POLICY_VIOLATION); }
-        }
-    }
+    // Keep session expiration active even when there are no live WebSockets.
+    // Spring's scheduling thread is separate from Reactor Netty.
     @Scheduled(fixedDelay=1000)
-    public void tick() {
-        platform.sweep();
-        for (Client c : clients.values()) {
-            synchronized (c) {
-                if (!c.socket.isOpen()) { clients.remove(c.socket.getId(), c); continue; }
-                if (c.token == null) {
-                    if (System.nanoTime()-c.acceptedAt > 5_000_000_000L) close(c,CloseStatus.POLICY_VIOLATION);
-                    continue;
-                }
-                try {
-                    var snapshot = platform.lobby(c.token);
-                    if (!snapshot.equals(c.last)) send(c, snapshot);
-                } catch (Platform.Unauthorized e) {
-                    close(c,CloseStatus.POLICY_VIOLATION);
-                } catch (Exception e) {
-                    close(c,CloseStatus.SERVER_ERROR);
-                }
-            }
-        }
-    }
-    private void send(Client c, Platform.Lobby snapshot) throws IOException {
-        c.socket.sendMessage(new TextMessage(json.writeValueAsString(Map.of("type","lobby","data",snapshot))));
-        c.last = snapshot;
-    }
-    private void close(Client c, CloseStatus status) {
-        clients.remove(c.socket.getId(), c);
-        try { c.socket.close(status); } catch (IOException ignored) {}
-    }
-    @Override public void afterConnectionClosed(WebSocketSession socket, CloseStatus status) {
-        clients.remove(socket.getId());
-    }
-    @Override public void handleTransportError(WebSocketSession socket, Throwable error) {
-        Client c = clients.remove(socket.getId());
-        if (c != null) close(c, CloseStatus.SERVER_ERROR);
-    }
+    public void sweep() { platform.sweep(); }
 }

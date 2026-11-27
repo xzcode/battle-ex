@@ -4,7 +4,7 @@ A self-hostable PC game LAN multiplayer and competitive platform. Shared network
 
 **Status: M2 authenticated room-network development baseline; no playable release yet.**
 
-Spring Boot / Java 21 accounts and lobby, optional MongoDB account persistence,
+Spring Boot WebFlux / Reactor Netty / Java 21 accounts and lobby, optional reactive MongoDB account persistence,
 Vue 3 desktop UI and a Go agent/relay integrating the pinned Network Core EX
 candidate. Linux isolated real-room direct/relay, isolation and revocation
 tests pass. See [M2 implementation and deployment configuration](docs/M2_IMPLEMENTATION.md)
@@ -20,7 +20,7 @@ Windows-first desktop client (Tauri 2 + Vue 3 + TypeScript), game lobby, private
 ## Architecture
 
 - Desktop UI communicates with a separate Go network agent using authenticated local IPC. Virtual adapters are installed with explicit OS permissions.
-- Product control plane: Java 21 / Spring Boot + WebSocket as the proposed baseline; MongoDB for durable account/room data, Redis optional for multi-instance presence and matchmaking. Keep service/storage interfaces separable; no mandatory distributed cluster for initial development.
+- Product control plane: Java 21 / Spring Boot WebFlux + Reactor Netty, reactive HTTP/WebSocket and MongoDB Reactive Streams for account persistence; room/session state remains single-instance in memory. Redis and durable room storage are future options for multi-instance presence and matchmaking. Keep service/storage interfaces separable; no mandatory distributed cluster for initial development.
 - Network Core EX supplies peer transport, encrypted tunnels, NAT traversal, relay, discovery and optional Ethernet. No fork of the network implementation.
 - Room admission issues short-lived, room-scoped peer membership; joining/leaving/revocation updates authoritative snapshots. Separate room networks, default-deny forwarding and no unauthenticated public relay.
 - A game adapter declares discovery mode (L3 unicast, controlled UDP discovery, L2, dedicated server), version constraints, executable path, launch arguments and optional trusted result integration. No generic claim of anti-cheat or reliable win/loss detection.

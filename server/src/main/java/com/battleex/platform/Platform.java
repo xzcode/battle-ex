@@ -11,7 +11,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
-import java.util.function.Function;
+import reactor.core.publisher.Mono;
 
 /** Single-instance authoritative account sessions and room mutations. */
 public final class Platform {
@@ -25,6 +25,7 @@ public final class Platform {
     }
 
     private final AccountStore accounts;
+    private final ReactiveWork work;
     private final RoomDirectory rooms = new RoomDirectory();
     private final Map<String,Session> sessions = new HashMap<>();
     private final Map<UUID,Session> byUser = new HashMap<>();
@@ -35,27 +36,39 @@ public final class Platform {
     private final String dummyHash;
     private long revision;
 
-    public Platform(AccountStore accounts) { this(accounts, Clock.systemUTC(), Duration.ofHours(12)); }
-    Platform(AccountStore accounts, Clock clock, Duration lifetime) {
-        this.accounts = accounts; this.clock = clock; this.lifetime = lifetime;
+    public Platform(AccountStore accounts, ReactiveWork work) {
+        this(accounts, work, Clock.systemUTC(), Duration.ofHours(12));
+    }
+    Platform(AccountStore accounts, ReactiveWork work, Clock clock, Duration lifetime) {
+        this.accounts = accounts; this.work = work; this.clock = clock; this.lifetime = lifetime;
         dummyHash = passwords.encode(UUID.randomUUID().toString());
     }
 
-    public Login register(String rawName, String password) {
-        String username = username(rawName);
-        validatePassword(password);
-        var account = new AccountStore.Account(UUID.randomUUID(), username, passwords.encode(password));
-        if (!accounts.insert(account)) throw new IllegalStateException("username already exists");
-        return issue(account);
+    public Mono<Login> register(String rawName, String password) {
+        return work.password(() -> {
+            String username = username(rawName);
+            validatePassword(password);
+            return new AccountStore.Account(UUID.randomUUID(), username, passwords.encode(password));
+        }).flatMap(account -> accounts.insert(account)
+                .flatMap(inserted -> inserted
+                        ? work.state(() -> issue(account))
+                        : Mono.error(new IllegalStateException("username already exists"))));
     }
-    public Login login(String rawName, String password) {
-        String username;
-        try { username = username(rawName); validatePassword(password); }
-        catch (IllegalArgumentException e) { throw new Unauthorized(); }
-        var account = accounts.find(username);
-        boolean ok = passwords.matches(password, account == null ? dummyHash : account.passwordHash());
-        if (account == null || !ok) throw new Unauthorized();
-        return issue(account);
+
+    public Mono<Login> login(String rawName, String password) {
+        return Mono.defer(() -> {
+            final String username;
+            try { username = username(rawName); validatePassword(password); }
+            catch (IllegalArgumentException e) { return Mono.error(new Unauthorized()); }
+            return accounts.find(username).map(Optional::of).defaultIfEmpty(Optional.empty())
+                    .flatMap(found -> work.password(() -> {
+                        boolean ok = passwords.matches(password,
+                                found.map(AccountStore.Account::passwordHash).orElse(dummyHash));
+                        if (found.isEmpty() || !ok) throw new Unauthorized();
+                        return found.get();
+                    }))
+                    .flatMap(account -> work.state(() -> issue(account)));
+        });
     }
     private synchronized Login issue(AccountStore.Account account) {
         sweep();

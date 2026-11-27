@@ -31,7 +31,7 @@ async function start(){
     const timer=setTimeout(()=>reject(new Error('startup timeout: '+logs.slice(-2000))),45000)
     function read(chunk){
       logs=(logs+chunk.toString()).slice(-10000)
-      const m=logs.match(/Tomcat started on port (\d+)/)
+      const m=logs.match(/Netty started on port (\d+)/)
       if(m&&logs.includes('Started BattleApplication')){clearTimeout(timer);resolve('http://127.0.0.1:'+m[1])}
     }
     backend.stdout.on('data',read);backend.stderr.on('data',read)

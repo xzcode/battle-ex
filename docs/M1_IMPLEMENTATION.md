@@ -2,7 +2,7 @@
 
 ## Scope
 
-- Java 21 / Spring Boot 3.5.16 server, single-process room authority.
+- Java 21 / Spring Boot 3.5.16 WebFlux server with Reactor Netty, single-process room authority (see [WebFlux migration](WEBFLUX_MIGRATION.md)).
 - Registration and login: normalized unique username, BCrypt cost 12, password validation (8 characters minimum, 72 UTF-8 bytes maximum), 256-bit opaque bearer tokens, hashed token lookup, 12-hour expiry and one active session per account. Replacement revokes the old token; logout/expiry removes the user's room membership. No game launch or trusted match result claim.
 - AccountStore.Memory (default, development only) and MongoAccounts (configured via BATTLE_MONGO_URI). Configured database failure fails startup; no silent memory fallback. MongoDB unique username index; only password hashes persisted. Rooms/session state intentionally resets across server restart.
 - Authenticated REST room actions and lobby snapshots; membership/host checks, private invitation reveal/rotate, atomic capacity, readiness, start/finish, leave and host transfer. Signed-in count means valid sessions, not actual online sockets.
