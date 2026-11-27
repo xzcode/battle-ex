@@ -2,7 +2,7 @@ name: Windows desktop build
 on:
   push:
     branches: [master]
-    paths: ['apps/desktop/**', 'agent/**', '.github/workflows/windows-build.yml', 'scripts/**', 'deploy/windows/**']
+    paths: ['apps/desktop/**', 'agent/**', '.github/workflows/windows-build.yml', 'scripts/build-windows-network-kit.sh', 'deploy/windows/**']
   workflow_dispatch:
   workflow_call:
 permissions:
@@ -61,12 +61,15 @@ jobs:
           $msi = @(Get-ChildItem -Path "$bundle/msi" -Filter *.msi -File)
           $nsis = @(Get-ChildItem -Path "$bundle/nsis" -Filter *.exe -File)
           if (!$msi.Count -or !$nsis.Count) { throw 'Both installer formats are required' }
-          Copy-Item -Path ($msi.FullName + $nsis.FullName) -Destination $out.FullName
+          foreach ($installer in ($msi + $nsis)) {
+            Copy-Item -LiteralPath $installer.FullName -Destination $out.FullName
+          }
           Copy-Item -LiteralPath 'apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/battle-ex.exe' -Destination $out.FullName
           Copy-Item -LiteralPath 'apps/desktop/src-tauri/binaries/battle-agent-x86_64-pc-windows-msvc.exe' -Destination (Join-Path $out.FullName 'battle-agent.exe')
           $kit = New-Item -ItemType Directory -Force artifacts/network-kit
           Copy-Item -LiteralPath (Join-Path $out.FullName 'battle-agent.exe') -Destination $kit.FullName
-          Copy-Item -Path 'deploy/windows/*.ps1','deploy/windows/README.md' -Destination $kit.FullName
+          Get-ChildItem -LiteralPath 'deploy/windows' -Filter '*.ps1' -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $kit.FullName }
+          Copy-Item -LiteralPath 'deploy/windows/README.md' -Destination $kit.FullName
           $agentHash = (Get-FileHash -LiteralPath (Join-Path $kit.FullName 'battle-agent.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
           [IO.File]::WriteAllText((Join-Path $kit.FullName 'SHA256SUMS'), "$agentHash  battle-agent.exe`n")
           Compress-Archive -Path "$($kit.FullName)/*" -DestinationPath (Join-Path $out.FullName 'windows-network-service.zip')

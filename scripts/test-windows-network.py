@@ -29,16 +29,30 @@ PS = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershel
 OPENSSL = shutil.which("openssl") or str(Path(os.environ["ProgramFiles"]) / "Git/usr/bin/openssl.exe")
 JAVA = Path(os.environ["JAVA_HOME"]) / "bin/java.exe"
 
+def legacy_powershell_env(env=None):
+    # Actions runs pwsh 7; its PSModulePath can make Windows PowerShell 5.1
+    # import incompatible PowerShell Core modules. Use the native 5.1 path
+    # for fixture provisioning and the actual installer.
+    clean = dict(os.environ if env is None else env)
+    clean["PSModulePath"] = os.pathsep.join([
+        str(PS.parent / "Modules"),
+        str(Path(clean["ProgramFiles"]) / "WindowsPowerShell/Modules"),
+    ])
+    return clean
+
+
 def run(*args, **kw):
+    if Path(str(args[0])) == PS:
+        kw["env"] = legacy_powershell_env(kw.get("env"))
     return subprocess.run([str(x) for x in args], check=True, **kw)
 
 def ps(script, env=None, capture=False):
     # Avoid Windows PowerShell's native -Command quoting/multiline parsing.
     # Script bodies contain environment references, not credential values.
-    source = "$ErrorActionPreference='Stop';\ntry {\n" + script + "\nexit 0\n} catch {\n[Console]::Error.WriteLine($_.Exception.Message); exit 1\n}"
+    source = "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.Encoding]::UTF8;\ntry {\n" + script + "\nexit 0\n} catch {\n[Console]::Error.WriteLine($_.Exception.ToString()); exit 1\n}"
     encoded = base64.b64encode(source.encode("utf-16-le")).decode("ascii")
     result = subprocess.run([str(PS), "-NoLogo", "-NoProfile", "-NonInteractive",
-                             "-EncodedCommand", encoded], env=env, capture_output=True)
+                             "-EncodedCommand", encoded], env=legacy_powershell_env(env), capture_output=True)
     stdout = result.stdout.decode("utf-8", errors="replace")
     stderr = result.stderr.decode("utf-8", errors="replace")
     # Never emit ephemeral fixture secrets even on errors.
@@ -117,8 +131,10 @@ with tempfile.TemporaryDirectory(prefix="bex-windows-ci-") as work:
         # Real non-administrator local accounts. Password is ephemeral and read
         # from environment rather than printed or placed in a command line.
         sid = ps("""
-            Import-Module Microsoft.PowerShell.LocalAccounts
-            $password=ConvertTo-SecureString -String $env:BATTLE_TEST_PASSWORD -AsPlainText -Force
+            Import-Module (Join-Path $PSHOME 'Modules/Microsoft.PowerShell.LocalAccounts') -ErrorAction Stop
+            $password=[System.Security.SecureString]::new()
+            foreach($c in $env:BATTLE_TEST_PASSWORD.ToCharArray()){$password.AppendChar($c)}
+            $password.MakeReadOnly()
             $users=Get-LocalGroup -SID ([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-545'))
             $admins=Get-LocalGroup -SID ([System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
             foreach($name in @($env:BATTLE_TEST_ALLOWED,$env:BATTLE_TEST_DENIED)){
@@ -134,6 +150,7 @@ with tempfile.TemporaryDirectory(prefix="bex-windows-ci-") as work:
             (Get-LocalUser -Name $env:BATTLE_TEST_ALLOWED).SID.Value
         """, env=env, capture=True).stdout.strip()
         assert sid.startswith("S-1-5-21-")
+        print("PASS: disposable non-administrator Windows users provisioned", flush=True)
         server_env = {**env, "BATTLE_BIND":"127.0.0.1","BATTLE_PORT":str(api_port),
             "BATTLE_MONGO_URI":"","BATTLE_STATE_MODE":"memory",
             "SERVER_SSL_ENABLED":"true","SERVER_SSL_KEY_STORE":str(p12),"SERVER_SSL_KEY_STORE_TYPE":"PKCS12",
