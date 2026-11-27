@@ -10,3 +10,6 @@ agent/bin/
 apps/desktop/src-tauri/binaries/
 
 __pycache__/
+
+apps/desktop/src-tauri/icons/icon.ico
+artifacts/

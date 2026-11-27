@@ -10,6 +10,12 @@ if(!target)throw new Error('Rust target triple required to build network agent')
 const goos=target.includes('windows')?'windows':target.includes('darwin')?'darwin':target.includes('linux')?'linux':null
 const goarch=target.startsWith('x86_64')?'amd64':target.startsWith('aarch64')?'arm64':null
 if(!goos||!goarch)throw new Error('Unsupported agent target: '+target)
+if(goos==='windows'){
+ const icon=spawnSync(process.execPath,[resolve(desktop,'scripts/build-icons.mjs')],{stdio:'inherit'})
+ if(icon.error)throw icon.error
+ if(icon.status!==0)process.exit(icon.status||1)
+}
+
 const dir=resolve(desktop,'src-tauri/binaries');mkdirSync(dir,{recursive:true})
 const out=resolve(dir,'battle-agent-'+target+(goos==='windows'?'.exe':''))
 const run=spawnSync('go',['build','-trimpath','-o',out,'./cmd/agent'],{

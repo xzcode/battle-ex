@@ -1,0 +1,80 @@
+name: Windows desktop build
+on:
+  push:
+    branches: [master]
+    paths: ['apps/desktop/**', 'agent/**', '.github/workflows/windows-build.yml', 'scripts/**', 'deploy/windows/**']
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+          cache-dependency-path: agent/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Native toolchain
+        shell: pwsh
+        run: |
+          rustup toolchain install stable --profile minimal --target x86_64-pc-windows-msvc
+          rustup default stable
+          rustc -V
+          go version
+      - name: Build and test native agent
+        working-directory: agent
+        shell: pwsh
+        run: |
+          go test ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go vet ./...
+      - name: Frontend and native Rust tests
+        working-directory: apps/desktop
+        shell: pwsh
+        run: |
+          npm ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build:agent
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+      - name: Build unsigned Windows installers
+        working-directory: apps/desktop
+        shell: pwsh
+        run: npm run desktop:build -- --target x86_64-pc-windows-msvc
+      - name: Stage artifacts
+        shell: pwsh
+        run: |
+          $out = New-Item -ItemType Directory -Force artifacts/windows-desktop
+          $bundle = 'apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle'
+          $msi = @(Get-ChildItem -Path "$bundle/msi" -Filter *.msi -File)
+          $nsis = @(Get-ChildItem -Path "$bundle/nsis" -Filter *.exe -File)
+          if (!$msi.Count -or !$nsis.Count) { throw 'Both installer formats are required' }
+          Copy-Item -Path ($msi.FullName + $nsis.FullName) -Destination $out.FullName
+          Copy-Item -LiteralPath 'apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/battle-ex.exe' -Destination $out.FullName
+          Copy-Item -LiteralPath 'apps/desktop/src-tauri/binaries/battle-agent-x86_64-pc-windows-msvc.exe' -Destination (Join-Path $out.FullName 'battle-agent.exe')
+          $kit = New-Item -ItemType Directory -Force artifacts/network-kit
+          Copy-Item -LiteralPath (Join-Path $out.FullName 'battle-agent.exe') -Destination $kit.FullName
+          Copy-Item -Path 'deploy/windows/*.ps1','deploy/windows/README.md' -Destination $kit.FullName
+          $agentHash = (Get-FileHash -LiteralPath (Join-Path $kit.FullName 'battle-agent.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText((Join-Path $kit.FullName 'SHA256SUMS'), "$agentHash  battle-agent.exe`n")
+          Compress-Archive -Path "$($kit.FullName)/*" -DestinationPath (Join-Path $out.FullName 'windows-network-service.zip')
+          $sums = @(Get-ChildItem -Path $out.FullName -File | ForEach-Object { '{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name })
+          [IO.File]::WriteAllText((Join-Path $out.FullName 'SHA256SUMS'), ($sums -join "`n") + "`n")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: battle-ex-windows-x64
+          path: artifacts/windows-desktop/
+          if-no-files-found: error
+          retention-days: 14

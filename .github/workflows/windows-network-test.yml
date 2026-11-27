@@ -1,0 +1,53 @@
+name: Windows native network acceptance
+on:
+  push:
+    branches: [master]
+    paths: ['agent/**', 'server/**', 'deploy/windows/**', 'scripts/test-windows-network.py', '.github/workflows/windows-network-test.yml']
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  network:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agent/go.mod
+          cache-dependency-path: agent/go.sum
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: server/pom.xml
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build actual control plane
+        shell: pwsh
+        run: mvn -B -ntp -f server/pom.xml test package
+      - name: Native agent and relay
+        working-directory: agent
+        shell: pwsh
+        run: |
+          go test ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -Force -ItemType Directory bin | Out-Null
+          go build -trimpath -o bin/battle-agent.exe ./cmd/agent
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go build -trimpath -o bin/battle-relay.exe ./cmd/relay
+      - name: Install and exercise real Windows SCM, Wintun and room traffic
+        shell: pwsh
+        run: python scripts/test-windows-network.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-network-evidence
+          path: artifacts/windows-network/
+          if-no-files-found: warn
+          retention-days: 14

@@ -47,3 +47,7 @@ First release gate: two real Windows clients can find and join a game, exchange 
 ## 中文
 
 Battle EX 是面向 PC 局域网游戏的自托管联机对战平台。首版以 Windows 为主，先打通房间、游戏发现、联机和启动，再增加竞技排名、录像和反作弊。网络核心统一复用 Network Core EX，不复制商业平台代码，不分发游戏本体。游戏适配目标不代表已兼容。
+
+## Windows CI and development artifacts
+
+Windows-native desktop packaging and SCM/Wintun network acceptance now have separate GitHub Actions workflows. See [Windows CI documentation](docs/WINDOWS_CI.md). Artifacts remain unsigned development builds until the release gates are satisfied.
