@@ -5,6 +5,7 @@ import com.battleex.platform.MongoAccounts;
 import com.battleex.platform.Platform;
 import com.battleex.platform.ReactiveWork;
 import com.battleex.competition.ResultAuthority;
+import com.battleex.moderation.Moderation;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.SpringApplication;
@@ -27,7 +28,8 @@ public class BattleApplication {
 
     @Bean Platform platform(AccountStore accounts,ReactiveWork work,ObjectMapper mapper,
             @Value("${battle.competition.result-issuer:}") String issuer,
-            @Value("${battle.competition.ranked-games:}") String games) {
-        return new Platform(accounts,work,new ResultAuthority(issuer,games,mapper));
+            @Value("${battle.competition.ranked-games:}") String games,
+            @Value("${battle.moderation.key-sha256:}") String moderatorDigest) {
+        return new Platform(accounts,work,new ResultAuthority(issuer,games,mapper),new Moderation(moderatorDigest));
     }
 }

@@ -5,7 +5,7 @@ export type GameBuild={gameId:string;sha256:string;fileVersion:string|null;archi
 export type Member={userId:string;ready:boolean;gameBuild?:GameBuild|null}
 export type RoomSummary={id:string;name:string;gameId:string;capacity:number;occupancy:number;state:RoomState}
 export type Room={id:string;networkId:string;name:string;gameId:string;capacity:number;visibility:Visibility;host:string;state:RoomState;revision:number;membershipRevision:number;members:Member[]}
-export type Lobby={user:User;revision:number;signedInUsers:number;rooms:RoomSummary[];activeRoom:Room|null;memberNames:Record<string,string>;competition?:CompetitionView}
+export type Lobby={user:User;revision:number;signedInUsers:number;rooms:RoomSummary[];activeRoom:Room|null;memberNames:Record<string,string>;competition?:CompetitionView;moderationConfigured?:boolean}
 export type Login={token:string;expiresAt:string;user:User}
 export class ApiError extends Error {constructor(public status:number,message:string){super(message)}}
 export function serverOrigin(raw:string):string{
@@ -15,10 +15,10 @@ export function serverOrigin(raw:string):string{
   if(u.username||u.password||u.search||u.hash||u.pathname!=='/')throw new Error('Enter the server origin, without a path or credentials.')
   return u.origin
 }
-export async function request<T>(origin:string,path:string,token:string|null=null,method='GET',body?:unknown):Promise<T>{
+export async function request<T>(origin:string,path:string,token:string|null=null,method='GET',body?:unknown,moderatorKey?:string):Promise<T>{
   const res=await fetch(origin+'/api/v1'+path,{
     method,credentials:'omit',cache:'no-store',redirect:'error',
-    headers:{...(token?{Authorization:'Bearer '+token}:{}),...(body!==undefined?{'Content-Type':'application/json'}:{})},
+    headers:{...(token?{Authorization:'Bearer '+token}:{}),...(moderatorKey?{'X-Battle-Moderator':moderatorKey}:{}),...(body!==undefined?{'Content-Type':'application/json'}:{})},
     ...(body!==undefined?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(15000)
   })
   if(!res.ok){
@@ -43,3 +43,12 @@ export type MatchRecord={id:string;roomId:string;gameId:string;mode:MatchMode;pl
 export type CompetitionView={ticket:{user:User;gameId:string;mode:MatchMode;queuedAt:number}|null;match:MatchRecord|null;awaitingResult:MatchRecord|null;rankedGames:string[]}
 export type Leaderboard={gameId:string;offset:number;total:number;entries:{rank:number;rating:{gameId:string;user:User;points:number;played:number;wins:number;draws:number;losses:number}}[]}
 export type MatchHistory={offset:number;total:number;entries:MatchRecord[]}
+
+
+export type ReplayRecord={id:string;matchId:string;uploader:User;gameId:string;filename:string;sha256:string;bytes:number;createdAt:number}
+export type MatchDetail={match:MatchRecord;replays:ReplayRecord[];sharingStatus:boolean;publicStatus:boolean}
+export type LiveMatch={matchId:string;gameId:string;mode:MatchMode;players:User[];startedAt:number}
+export type Page<T>={offset:number;total:number;entries:T[]}
+export type ModerationReport={id:string;matchId:string;reporter:User;target:User;reason:string;details:string;replaySha256:string|null;createdAt:number;status:string;reviewer:User|null;reviewedAt:number|null;resolution:string|null;suspensionId:string|null}
+export type Suspension={id:string;target:User;reviewer:User;reportId:string;reason:string;createdAt:number;until:number|null;revokedAt:number|null;revokedBy:User|null;revokeReason:string|null}
+export type WarningRecord={id:string;matchId:string;message:string;at:number}

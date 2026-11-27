@@ -198,6 +198,12 @@ public final class Competition {
         for(int i=from;i<to;i++)result.add(new Standing(i+1L,rows.get(i)));
         return new Leaderboard(gameId,offset,rows.size(),List.copyOf(result));
     }
+    public Match participantMatch(UUID user,UUID matchId){
+        Match m=matches.get(matchId);
+        if(m==null||!m.contains(user))throw new SecurityException("match participant required");
+        return m;
+    }
+    public List<Match> runningMatches(){return matches.values().stream().filter(m->m.state()==State.RUNNING).toList();}
     public History history(UUID user,int offset,int limit){
         page(offset,limit);
         var rows=matches.values().stream().filter(m->m.contains(user)).sorted(Comparator.comparingLong(Match::createdAt).reversed().thenComparing(Match::id)).toList();

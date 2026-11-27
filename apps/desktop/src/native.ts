@@ -24,3 +24,10 @@ export function removeGame(id:string){return invoke<void>('game_remove',{id})}
 export function launchGame(id:string){return invoke<number|null>('game_launch',{id})}
 
 export function joinCsPeer(roomId:string,peerId:string,port:number){return invoke<number|null>('game_join_cs',{roomId,peerId,port})}
+
+export type LocalReplay={id:string;gameId:string;filename:string;sha256:string;bytes:number;importedAt:number}
+export function listReplays(origin:string,userId:string){return invoke<LocalReplay[]>('replay_list',{origin,userId})}
+export function importReplay(origin:string,userId:string,gameId:string){return invoke<LocalReplay|null>('replay_import',{origin,userId,gameId})}
+export function verifyReplay(origin:string,userId:string,id:string){return invoke<LocalReplay>('replay_verify',{origin,userId,id})}
+export function exportReplay(origin:string,userId:string,id:string){return invoke<boolean>('replay_export',{origin,userId,id})}
+export function removeReplay(origin:string,userId:string,id:string){return invoke<boolean>('replay_remove',{origin,userId,id})}

@@ -46,7 +46,7 @@ public class WebConfig implements WebFluxConfigurer {
 
     @Override public void addCorsMappings(CorsRegistry registry) {
         registry.addMapping("/api/v1/**").allowedOrigins(origins)
-                .allowedMethods("GET","POST","DELETE","OPTIONS").allowedHeaders("Authorization","Content-Type")
+                .allowedMethods("GET","POST","DELETE","OPTIONS").allowedHeaders("Authorization","Content-Type","X-Battle-Moderator")
                 .allowCredentials(false);
     }
 

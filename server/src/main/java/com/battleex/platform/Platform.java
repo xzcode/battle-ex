@@ -3,6 +3,8 @@ package com.battleex.platform;
 import com.battleex.room.RoomDirectory;
 import com.battleex.competition.Competition;
 import com.battleex.competition.ResultAuthority;
+import com.battleex.competition.MatchArchive;
+import com.battleex.moderation.Moderation;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 
 import java.nio.charset.StandardCharsets;
@@ -20,7 +22,7 @@ public final class Platform {
     public record User(UUID id, String username) {}
     public record Login(String token, Instant expiresAt, User user) {}
     public record Lobby(User user, long revision, int signedInUsers, List<RoomDirectory.RoomSummary> rooms,
-                        RoomDirectory.RoomView activeRoom, Map<UUID,String> memberNames, Competition.View competition) {}
+                        RoomDirectory.RoomView activeRoom, Map<UUID,String> memberNames, Competition.View competition,boolean moderationConfigured) {}
     public record Session(User user, Instant expiresAt, String digest) {}
     public static final class Unauthorized extends RuntimeException {
         public Unauthorized() { super("authentication required or invalid credentials"); }
@@ -30,6 +32,8 @@ public final class Platform {
     private final ReactiveWork work;
     private final RoomDirectory rooms = new RoomDirectory();
     private final Competition competition;
+    private final MatchArchive archive=new MatchArchive();
+    private final Moderation moderation;
     private final Map<String,Session> sessions = new HashMap<>();
     private final Map<UUID,Session> byUser = new HashMap<>();
     private final BCryptPasswordEncoder passwords = new BCryptPasswordEncoder(12);
@@ -40,24 +44,27 @@ public final class Platform {
     private long revision;
 
     public Platform(AccountStore accounts, ReactiveWork work) {
-        this(accounts, work, Clock.systemUTC(), Duration.ofHours(12),ResultAuthority.disabled());
+        this(accounts, work, Clock.systemUTC(), Duration.ofHours(12),ResultAuthority.disabled(),new Moderation(""));
     }
     public Platform(AccountStore accounts,ReactiveWork work,ResultAuthority authority){
-        this(accounts,work,Clock.systemUTC(),Duration.ofHours(12),authority);
+        this(accounts,work,Clock.systemUTC(),Duration.ofHours(12),authority,new Moderation(""));
+    }
+    public Platform(AccountStore accounts,ReactiveWork work,ResultAuthority authority,Moderation moderation){
+        this(accounts,work,Clock.systemUTC(),Duration.ofHours(12),authority,moderation);
     }
     Platform(AccountStore accounts, ReactiveWork work, Clock clock, Duration lifetime) {
-        this(accounts,work,clock,lifetime,ResultAuthority.disabled());
+        this(accounts,work,clock,lifetime,ResultAuthority.disabled(),new Moderation(""));
     }
-    Platform(AccountStore accounts, ReactiveWork work, Clock clock, Duration lifetime,ResultAuthority authority) {
+    Platform(AccountStore accounts, ReactiveWork work, Clock clock, Duration lifetime,ResultAuthority authority,Moderation moderation) {
         this.accounts = accounts; this.work = work; this.clock = clock; this.lifetime = lifetime;
-        this.competition=new Competition(authority);
+        this.competition=new Competition(authority);this.moderation=moderation;
         dummyHash = passwords.encode(UUID.randomUUID().toString());
     }
 
-    public record StateDump(long revision,List<Session> sessions,List<RoomDirectory.StoredRoom> rooms,Competition.Dump competition) {}
+    public record StateDump(long revision,List<Session> sessions,List<RoomDirectory.StoredRoom> rooms,Competition.Dump competition,MatchArchive.Dump archive,Moderation.Dump moderation) {}
     public synchronized StateDump exportState(){
         return new StateDump(revision,sessions.values().stream()
-                .sorted(Comparator.comparing(Session::digest)).toList(),rooms.exportState(),competition.exportState());
+                .sorted(Comparator.comparing(Session::digest)).toList(),rooms.exportState(),competition.exportState(),archive.exportState(),moderation.exportState());
     }
     public synchronized void importState(StateDump state){
         Map<String,Session> next=new HashMap<>();
@@ -70,6 +77,7 @@ public final class Platform {
             if(!users.containsKey(member.userId()))throw new IllegalStateException("room member has no persisted session");
         rooms.importState(state.rooms());
         competition.importState(state.competition());
+        archive.importState(state.archive(),competition);moderation.importState(state.moderation(),competition);
         var dump=competition.exportState();
         for(var ticket:dump.tickets())if(!users.containsKey(ticket.user().id())||rooms.activeRoom(ticket.user().id())!=null)
             throw new IllegalStateException("invalid persisted queued account");
@@ -113,6 +121,7 @@ public final class Platform {
     }
     private synchronized Login issue(AccountStore.Account account) {
         sweep();
+        if(moderation.activeSuspension(account.id(),clock.instant().getEpochSecond())!=null)throw new SecurityException("account suspended");
         byte[] bytes = new byte[32]; random.nextBytes(bytes);
         String token = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
         User user = new User(account.id(), account.username());
@@ -141,7 +150,7 @@ public final class Platform {
     }
     public synchronized boolean isSessionCurrent(UUID user, String digest) {
         var s = byUser.get(user);
-        return s != null && s.digest().equals(digest) && s.expiresAt().isAfter(clock.instant());
+        return s != null && s.digest().equals(digest) && s.expiresAt().isAfter(clock.instant())&&moderation.activeSuspension(user,clock.instant().getEpochSecond())==null;
     }
     public synchronized RoomDirectory.RoomView roomByNetwork(UUID network) {
         return rooms.byNetwork(network);
@@ -155,7 +164,7 @@ public final class Platform {
             var memberSession = byUser.get(member.userId());
             if (memberSession != null) names.put(member.userId(), memberSession.user().username());
         }
-        return new Lobby(s.user(), revision, byUser.size(), rooms.listPublic(), room, Map.copyOf(names),competition.view(s.user().id()));
+        return new Lobby(s.user(), revision, byUser.size(), rooms.listPublic(), room, Map.copyOf(names),competition.view(s.user().id()),moderation.configured());
     }
     public synchronized RoomDirectory.RoomView create(String token, String name, String gameId,
                 int capacity, RoomDirectory.Visibility visibility) {
@@ -199,6 +208,7 @@ public final class Platform {
     public synchronized RoomDirectory.RoomView finish(String token, UUID id) {
         var result = rooms.finish(require(token).user().id(), id);
         if(competition.forRoom(id)!=null){
+            archive.close(competition.forRoom(id).id());
             competition.end(id,false,clock.instant().getEpochSecond());
             rooms.closeManaged(id);
         }
@@ -215,7 +225,7 @@ public final class Platform {
     }
     public synchronized void sweep() {
         Instant now = clock.instant();
-        for (Session s : new ArrayList<>(sessions.values())) if (!s.expiresAt().isAfter(now)) remove(s);
+        for (Session s : new ArrayList<>(sessions.values())) if (!s.expiresAt().isAfter(now)||moderation.activeSuspension(s.user().id(),now.getEpochSecond())!=null) remove(s);
         if(competition.expire(now.getEpochSecond()))revision++;
         matchWaiting(now.getEpochSecond());
     }
@@ -239,6 +249,7 @@ public final class Platform {
         var managed=competition.forRoom(roomId);
         if(managed==null){rooms.leave(actor,roomId);return;}
         rooms.view(actor,roomId); // enforce authenticated membership before teardown
+        archive.close(managed.id());
         competition.end(roomId,true,clock.instant().getEpochSecond());
         rooms.closeManaged(roomId);
     }
@@ -252,7 +263,7 @@ public final class Platform {
             revision++;
         }
     }
-    public String competitionFingerprint(){return competition.authority().configurationFingerprint();}
+    public String competitionFingerprint(){return competition.authority().configurationFingerprint()+moderation.fingerprint();}
     public synchronized Competition.View enqueue(String token,String gameId,Competition.Mode mode){
         var user=require(token).user();
         if(rooms.activeRoom(user.id())!=null)throw new IllegalStateException("leave your active room before matchmaking");
@@ -276,9 +287,65 @@ public final class Platform {
         var verified=competition.authority().verify(request);
         sweep();
         var result=competition.settle(verified,clock.instant().getEpochSecond());
+        archive.close(result.id());
         rooms.closeManaged(result.roomId());
         revision++;
         return result;
+    }
+
+    public synchronized MatchArchive.Detail matchDetail(String token,UUID id){
+        var actor=require(token).user();return archive.detail(competition.participantMatch(actor.id(),id),actor.id());
+    }
+    public synchronized MatchArchive.Replay addReplay(String token,UUID match,MatchArchive.ReplayInput input){
+        var actor=require(token).user();
+        var result=archive.add(competition.participantMatch(actor.id(),match),actor,input,clock.instant().getEpochSecond());
+        revision++;return result;
+    }
+    public synchronized void removeReplay(String token,UUID match,UUID replay){
+        var actor=require(token).user();archive.remove(competition.participantMatch(actor.id(),match),actor.id(),replay);revision++;
+    }
+    public synchronized MatchArchive.Detail shareStatus(String token,UUID match,boolean share){
+        var actor=require(token).user();var result=archive.consent(competition.participantMatch(actor.id(),match),actor.id(),share);
+        revision++;return result;
+    }
+    public synchronized List<MatchArchive.Live> liveMatches(String token){
+        require(token);return archive.live(competition.runningMatches());
+    }
+    public synchronized Moderation.Report fileReport(String token,Moderation.ReportInput input){
+        var actor=require(token).user();
+        if(input==null||input.matchId()==null)throw new IllegalArgumentException("match ID required");
+        var match=competition.participantMatch(actor.id(),input.matchId());
+        if(input.replaySha256()!=null&&!archive.detail(match,actor.id()).replays().stream().anyMatch(r->r.sha256().equals(input.replaySha256())&&r.uploader().id().equals(actor.id())))
+            throw new IllegalArgumentException("replay fingerprint must be your registered match replay");
+        var result=moderation.file(match,actor,input,clock.instant().getEpochSecond());revision++;return result;
+    }
+    public synchronized Moderation.Page<Moderation.Report> ownReports(String token,int offset,int limit){
+        return moderation.own(require(token).user().id(),offset,limit);
+    }
+    public synchronized List<Moderation.Warning> warnings(String token){return moderation.warnings(require(token).user().id());}
+    private User moderator(String token,String credential){
+        User actor=require(token).user();moderation.authorize(credential);return actor;
+    }
+    public synchronized Moderation.Page<Moderation.Report> reviewReports(String token,String key,Moderation.Status status,int offset,int limit){
+        moderator(token,key);return moderation.reports(status,offset,limit);
+    }
+    public synchronized Moderation.Report reviewReport(String token,String key,UUID id,Moderation.ReviewInput input){
+        User actor=moderator(token,key);
+        var result=moderation.review(id,actor,input,clock.instant().getEpochSecond());
+        // In the same authority commit, invalidate the banned account's
+        // token, queue and assigned room. Network authorization consults
+        // current session/membership; old relay grants are rejected.
+        if(result.status()==Moderation.Status.SUSPENDED&&moderation.activeSuspension(result.target().id(),clock.instant().getEpochSecond())!=null){
+            Session session=byUser.get(result.target().id());if(session!=null)remove(session);
+        }
+        revision++;return result;
+    }
+    public synchronized Moderation.Page<Moderation.Suspension> suspensions(String token,String key,int offset,int limit){
+        moderator(token,key);return moderation.suspensions(offset,limit);
+    }
+    public synchronized Moderation.Suspension revokeSuspension(String token,String key,UUID id,String reason){
+        var result=moderation.revoke(id,moderator(token,key),reason,clock.instant().getEpochSecond());
+        revision++;return result;
     }
 
     private static String digest(String token) {

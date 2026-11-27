@@ -1,9 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod games;
 mod network;
+mod replays;
 
 use games::{Entry, GameLibrary, Install};
 use network::NetworkAgent;
+use replays::{Replay, ReplayLibrary};
 use serde_json::Value;
 use tauri::{AppHandle, Manager, State};
 
@@ -148,10 +150,87 @@ async fn game_join_cs(
     .map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+async fn replay_list(
+    app: AppHandle,
+    state: State<'_, ReplayLibrary>,
+    origin: String,
+    user_id: String,
+) -> Result<Vec<Replay>, String> {
+    let library = state.inner().clone();
+    let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || library.list(&dir, &origin, &user_id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn replay_import(
+    app: AppHandle,
+    state: State<'_, ReplayLibrary>,
+    origin: String,
+    user_id: String,
+    game_id: String,
+) -> Result<Option<Replay>, String> {
+    let library = state.inner().clone();
+    let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        library.choose_import(&dir, &origin, &user_id, &game_id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn replay_verify(
+    app: AppHandle,
+    state: State<'_, ReplayLibrary>,
+    origin: String,
+    user_id: String,
+    id: String,
+) -> Result<Replay, String> {
+    let library = state.inner().clone();
+    let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || library.verify(&dir, &origin, &user_id, &id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn replay_export(
+    app: AppHandle,
+    state: State<'_, ReplayLibrary>,
+    origin: String,
+    user_id: String,
+    id: String,
+) -> Result<bool, String> {
+    let library = state.inner().clone();
+    let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || library.export(&dir, &origin, &user_id, &id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn replay_remove(
+    app: AppHandle,
+    state: State<'_, ReplayLibrary>,
+    origin: String,
+    user_id: String,
+    id: String,
+) -> Result<bool, String> {
+    let library = state.inner().clone();
+    let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || library.remove(&dir, &origin, &user_id, &id))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(NetworkAgent::default())
         .manage(GameLibrary::default())
+        .manage(ReplayLibrary::default())
         .invoke_handler(tauri::generate_handler![
             network_start,
             network_status,
@@ -163,7 +242,12 @@ fn main() {
             game_verify,
             game_remove,
             game_launch,
-            game_join_cs
+            game_join_cs,
+            replay_list,
+            replay_import,
+            replay_verify,
+            replay_export,
+            replay_remove
         ])
         .build(tauri::generate_context!())
         .expect("could not initialize Battle EX")

@@ -7,7 +7,7 @@ on:
         required: true
         type: string
       confirm:
-        description: 'Create a draft after native build and network tests pass'
+        description: 'Create a draft after platform, native build and network tests pass'
         required: true
         type: boolean
         default: false
@@ -20,8 +20,11 @@ jobs:
   network:
     if: inputs.confirm && github.ref == 'refs/heads/master'
     uses: ./.github/workflows/windows-network-test.yml
+  platform:
+    if: inputs.confirm && github.ref == 'refs/heads/master'
+    uses: ./.github/workflows/platform-test.yml
   draft:
-    needs: [build, network]
+    needs: [build, network, platform]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

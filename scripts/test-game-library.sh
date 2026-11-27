@@ -5,11 +5,13 @@ cd "$(dirname "$0")/.."
 root="$PWD/apps/desktop"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-mkdir -p "$work/apps/desktop/src-tauri/src/games"
+mkdir -p "$work/apps/desktop/src-tauri/src/games" "$work/apps/desktop/src-tauri/src/replays"
 cp "$root/game-catalog.json" "$work/apps/desktop/"
 cp "$root/src-tauri/src/games.rs" "$work/apps/desktop/src-tauri/src/games.rs"
 cp "$root/src-tauri/src/network.rs" "$work/apps/desktop/src-tauri/src/network.rs"
-printf 'pub mod games;\npub mod network;\n' > "$work/apps/desktop/src-tauri/src/lib.rs"
+cp "$root/src-tauri/src/replays.rs" "$work/apps/desktop/src-tauri/src/replays.rs"
+cp "$root/src-tauri/src/replays/windows.rs" "$work/apps/desktop/src-tauri/src/replays/windows.rs"
+printf 'pub mod games;\npub mod network;\npub mod replays;\n' > "$work/apps/desktop/src-tauri/src/lib.rs"
 cp "$root/src-tauri/src/games/windows.rs" "$work/apps/desktop/src-tauri/src/games/windows.rs"
 python3 - "$root/src-tauri/Cargo.toml" "$work/apps/desktop/src-tauri/Cargo.toml" <<'PY'
 from pathlib import Path

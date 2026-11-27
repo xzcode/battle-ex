@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
 import { readFile } from 'node:fs/promises'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, randomBytes, createHash } from 'node:crypto'
 import { resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright'
@@ -21,11 +21,12 @@ const serve = createServer(async(req,res)=>{
     res.writeHead(200,{'Content-Type':type});res.end(body)
   }catch{res.writeHead(404).end()}
 })
+const operatorKey=randomBytes(32).toString('base64url')
 let backend,browser
 async function start(){
   await new Promise((resolve,reject)=>{serve.once('error',reject);serve.listen(0,'127.0.0.1',resolve)})
   const origin='http://127.0.0.1:'+serve.address().port
-  backend=spawn(java,['-jar',jar],{env:{...process.env,BATTLE_MONGO_URI:'',BATTLE_BIND:'127.0.0.1',BATTLE_PORT:'0',BATTLE_ALLOWED_ORIGINS:origin},stdio:['ignore','pipe','pipe']})
+  backend=spawn(java,['-jar',jar],{env:{...process.env,BATTLE_MONGO_URI:'',BATTLE_BIND:'127.0.0.1',BATTLE_PORT:'0',BATTLE_ALLOWED_ORIGINS:origin,BATTLE_MODERATION_KEY_SHA256:createHash('sha256').update(operatorKey).digest('hex')},stdio:['ignore','pipe','pipe']})
   let logs=''
   const address=await new Promise((resolve,reject)=>{
     const timer=setTimeout(()=>reject(new Error('startup timeout: '+logs.slice(-2000))),45000)
@@ -134,6 +135,24 @@ try{
   const matchHost=await a.getByRole('button',{name:'Start match',exact:true}).count()?a:b
   const startMatched=matchHost.getByRole('button',{name:'Start match',exact:true})
   await untilEnabled(startMatched);await startMatched.click()
+  // Each participant must opt in before any other account sees live status.
+  const operator=await browser.newPage({viewport:{width:1280,height:800}})
+  await register(operator,origin,address,'operator_'+suffix,pwd)
+  await operator.getByRole('button',{name:'Match center',exact:true}).click()
+  await operator.getByRole('button',{name:'Live status',exact:true}).click()
+  await operator.getByText('No public live matches.',{exact:true}).waitFor()
+  for(const page of [a,b]){
+    await page.getByRole('button',{name:'Match details',exact:true}).click()
+    await page.getByRole('button',{name:'Allow public live status',exact:true}).click()
+    await page.getByRole('button',{name:'Withdraw live-status consent',exact:true}).waitFor()
+  }
+  await operator.getByRole('button',{name:'Refresh',exact:false}).last().click()
+  await operator.getByRole('row').filter({hasText:'match_'+suffix}).waitFor()
+  await a.getByRole('button',{name:'Withdraw live-status consent',exact:true}).click()
+  await a.getByRole('button',{name:'Allow public live status',exact:true}).waitFor()
+  await operator.getByRole('button',{name:'Refresh',exact:false}).last().click()
+  await operator.getByText('No public live matches.',{exact:true}).waitFor()
+  for(const page of [a,b])await page.getByRole('button',{name:'All games',exact:true}).click()
   await matchHost.getByRole('button',{name:'End session',exact:true}).click()
   for(const page of [a,b]){
     await page.getByRole('heading',{name:'You have not joined a room',exact:true}).waitFor()
@@ -141,6 +160,30 @@ try{
     await page.getByRole('button',{name:'My match history',exact:true}).click()
     await page.getByText('Finished · unrated',{exact:true}).waitFor()
   }
+  await a.getByRole('button',{name:'Match center',exact:true}).click()
+  await a.getByRole('button',{name:'Details',exact:true}).click()
+  await a.getByRole('button',{name:'Report participant',exact:true}).click()
+  await a.getByLabel('Description',{exact:true}).fill('Browser review fixture')
+  await a.getByRole('button',{name:'Submit for review',exact:true}).click()
+  await a.getByText('Report submitted for manual review.',{exact:true}).waitFor()
+  await a.getByRole('button',{name:'Fair play',exact:true}).click()
+  await a.getByRole('row').filter({hasText:'Pending review'}).waitFor()
+  await operator.getByRole('button',{name:'Fair play',exact:true}).click()
+  await operator.getByRole('button',{name:'Review console',exact:true}).click()
+  await operator.getByLabel('Operator credential',{exact:true}).fill(operatorKey)
+  await operator.getByRole('button',{name:'Unlock review console',exact:true}).click()
+  await operator.getByRole('button',{name:'Details',exact:true}).click()
+  await operator.getByRole('combobox',{name:'Decision',exact:true}).selectOption('WARN')
+  await operator.getByLabel('Review reason',{exact:true}).fill('Browser fixture warning')
+  await operator.getByRole('button',{name:'Confirm review',exact:true}).click()
+  await operator.getByText('Review recorded.',{exact:true}).waitFor()
+  await b.getByRole('button',{name:'Fair play',exact:true}).click()
+  await b.getByRole('button',{name:'My warnings',exact:true}).click()
+  await b.getByText('Browser fixture warning',{exact:true}).waitFor()
+  await a.getByRole('button',{name:'Match center',exact:true}).click()
+  await a.getByRole('button',{name:'Replay library',exact:true}).click()
+  assert(await a.getByRole('button',{name:'Import replay',exact:true}).isDisabled())
+  console.log('PASS: browser live-status consent, match detail/report, operator review and private warnings')
   console.log('PASS: browser matchmaking, queue cancellation, assigned room, match lifecycle and unrated history')
   console.log('PASS: built Vue UI against real Spring Boot server: two browser sessions, room creation/join, live readiness, start/end, language toggle, build mismatch, game library navigation, logout and host transfer')
 }finally{

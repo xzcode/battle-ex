@@ -1,0 +1,45 @@
+name: Platform business acceptance
+on:
+  push:
+    branches: [master]
+    paths: ['server/**', 'apps/desktop/src/**', 'apps/desktop/scripts/test-desktop.mjs', 'apps/desktop/package*.json', 'scripts/test-*.mjs', 'scripts/test-mongo.sh', '.github/workflows/platform-test.yml']
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  business:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: server/pom.xml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: WebFlux build and domain tests
+        run: mvn -B -ntp -f server/pom.xml test package
+      - name: Real platform API and competition
+        run: |
+          node scripts/test-platform.mjs
+          node scripts/test-competition.mjs
+      - name: Shared MongoDB competition, moderation and revocation
+        run: |
+          bash scripts/test-mongo.sh --competition
+          bash scripts/test-mongo.sh --archive-moderation
+      - name: Three-session desktop browser regression
+        working-directory: apps/desktop
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          npm run build
+          npm run test:e2e
