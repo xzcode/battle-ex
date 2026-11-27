@@ -200,7 +200,7 @@ onBeforeUnmount(()=>{if(netPoll)clearInterval(netPoll);reset();networkReconcile(
     <div class="top-actions"><span class="connection"><i :class="{online:connected}"></i>{{connected?t('live'):t('reconnecting')}}</span><button class="quiet" @click="toggleLanguage">{{t('language')}}</button><div class="user-avatar">{{lobby.user.username.slice(0,1).toUpperCase()}}</div><span class="username">{{lobby.user.username}}</span><button class="quiet" :disabled="busy" @click="signOut">{{t('signOut')}}</button></div>
    </header>
    <RelayMonitor v-if="view==='relays'" :origin="origin" :token="token" :language="language"/>
-   <GameLibrary v-else-if="view==='games'" :language="language" :initial-game="libraryGame" :room-game="room?.gameId" :room-id="room?.id" :room-state="room?.state" :reported-build="reportedBuild" :publish-build="publishBuild" :network-ready="networkReady"/>
+   <GameLibrary v-else-if="view==='games'" :language="language" :initial-game="libraryGame" :room-game="room?.gameId" :room-id="room?.id" :room-state="room?.state" :reported-build="reportedBuild" :publish-build="publishBuild" :network-ready="networkReady" :network-peers="netStatus.peers||[]" :member-names="lobby.memberNames"/>
    <div v-else class="workspace-body">
     <div class="main-panel">
      <div class="headline"><div><div class="eyebrow">BATTLE EX / LOBBY</div><h1>{{t('rooms')}}</h1><p class="muted">{{lobby.rooms.length}} {{t('roomCount')}} · {{lobby.signedInUsers}} {{t('signedIn')}}</p></div><button class="primary" :disabled="!!room||busy" @click="openCreate">＋ {{t('create')}}</button></div>
@@ -240,6 +240,11 @@ onBeforeUnmount(()=>{if(netPoll)clearInterval(netPoll);reset();networkReconcile(
        </div>
        <template v-if="netInfo?.enabled&&netTrusted">
         <div v-if="netStatus.ip" class="network-ip"><span>{{language==='zh'?'本机虚拟 IP':'Local virtual IP'}}</span><code>{{netStatus.ip}}</code></div>
+        <div v-if="netStatus.discoveryProfile" class="network-help">
+         <div>{{language==='zh'?'受控 UDP 发现（实验）':'Controlled UDP discovery (experimental)'}}</div>
+         <div v-if="netStatus.discovery" class="relay-probe-row"><span>{{language==='zh'?'发送 / 接收 / 丢弃':'Sent / received / dropped'}}</span><span>{{netStatus.discovery.sent}} / {{netStatus.discovery.received}} / {{netStatus.discovery.dropped}}</span></div>
+         <p v-else>{{language==='zh'?'当前平台尚未启用发现转发。':'Discovery forwarding is not active on this platform.'}}</p>
+        </div>
         <div v-if="netStatus.relayNode" class="network-ip"><span>{{language==='zh'?'中继节点':'Relay node'}}</span><code>{{netStatus.relayRegion||netStatus.relayNode}} · {{netStatus.relayNode}}</code></div>
         <div v-if="netStatus.relayCandidates?.length" class="network-help">
          <div>{{language==='zh'?'中继 HTTPS 探测耗时':'Relay HTTPS probe time'}}</div>

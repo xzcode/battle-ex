@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/xzcode/network-core-ex/pkg/protocol"
+	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -18,6 +21,7 @@ type Options struct {
 	StateDir, Issuer, APICA, RelayCA, Interface string
 	Port                                        uint16
 	ICEInterfaces                               []string
+	ProtectHosts                                []string
 }
 type PeerStatus struct {
 	UserID         string   `json:"userId"`
@@ -38,18 +42,26 @@ type CandidateStatus struct {
 	ProbeMillis *int   `json:"probeMillis"`
 }
 type Status struct {
-	State           string            `json:"state"`
-	RoomID          string            `json:"roomId,omitempty"`
-	NetworkID       string            `json:"networkId,omitempty"`
-	Revision        int64             `json:"revision,omitempty"`
-	IP              string            `json:"ip,omitempty"`
-	RelayNode       string            `json:"relayNode,omitempty"`
-	RelayRegion     string            `json:"relayRegion,omitempty"`
-	PathUpdates     int               `json:"pathUpdates"`
-	ExpiresAt       int64             `json:"expiresAt,omitempty"`
-	Peers           []PeerStatus      `json:"peers"`
-	RelayCandidates []CandidateStatus `json:"relayCandidates,omitempty"`
-	Error           string            `json:"error,omitempty"`
+	GameID           string            `json:"gameId,omitempty"`
+	State            string            `json:"state"`
+	RoomID           string            `json:"roomId,omitempty"`
+	NetworkID        string            `json:"networkId,omitempty"`
+	Revision         int64             `json:"revision,omitempty"`
+	IP               string            `json:"ip,omitempty"`
+	RelayNode        string            `json:"relayNode,omitempty"`
+	RelayRegion      string            `json:"relayRegion,omitempty"`
+	PathUpdates      int               `json:"pathUpdates"`
+	DiscoveryProfile string            `json:"discoveryProfile,omitempty"`
+	Discovery        *DiscoveryStatus  `json:"discovery,omitempty"`
+	ExpiresAt        int64             `json:"expiresAt,omitempty"`
+	Peers            []PeerStatus      `json:"peers"`
+	RelayCandidates  []CandidateStatus `json:"relayCandidates,omitempty"`
+	Error            string            `json:"error,omitempty"`
+}
+type DiscoveryStatus struct {
+	Sent     uint64 `json:"sent"`
+	Received uint64 `json:"received"`
+	Dropped  uint64 `json:"dropped"`
 }
 type active struct {
 	s           Snapshot
@@ -84,6 +96,11 @@ func Run(ctx context.Context, creds Credentials, o Options, report func(Status))
 		return e
 	}
 	report(Status{State: "enrolling"})
+	originURL, e := url.Parse(c.origin)
+	if e != nil {
+		return e
+	}
+	o.ProtectHosts = []string{originURL.Hostname()}
 	if e = c.Enroll(ctx); e != nil {
 		return e
 	}
@@ -218,7 +235,7 @@ func Run(ctx context.Context, creds Credentials, o Options, report func(Status))
 	}
 }
 func sameTopology(a, b Snapshot) bool {
-	return a.RoomID == b.RoomID && a.NetworkID == b.NetworkID && a.Revision == b.Revision && a.LocalIP == b.LocalIP && a.IdentityKey == b.IdentityKey && a.WireguardKey == b.WireguardKey && a.RelayNode == b.RelayNode && a.RelayURL == b.RelayURL && a.StunURL == b.StunURL && a.ICE == b.ICE && reflect.DeepEqual(a.Peers, b.Peers)
+	return a.RoomID == b.RoomID && a.NetworkID == b.NetworkID && a.Revision == b.Revision && a.LocalIP == b.LocalIP && a.IdentityKey == b.IdentityKey && a.WireguardKey == b.WireguardKey && a.RelayNode == b.RelayNode && a.RelayURL == b.RelayURL && a.StunURL == b.StunURL && a.ICE == b.ICE && a.GameID == b.GameID && a.DiscoveryProfile == b.DiscoveryProfile && reflect.DeepEqual(a.Peers, b.Peers)
 }
 
 // A signed revision may update relay leases or node selection without
@@ -226,7 +243,7 @@ func sameTopology(a, b Snapshot) bool {
 // the original fail-closed teardown path.
 func sameMembership(a, b Snapshot) bool {
 	if a.RoomID != b.RoomID || a.NetworkID != b.NetworkID || a.LocalIP != b.LocalIP ||
-		a.IdentityKey != b.IdentityKey || a.WireguardKey != b.WireguardKey || len(a.Peers) != len(b.Peers) {
+		a.IdentityKey != b.IdentityKey || a.WireguardKey != b.WireguardKey || a.GameID != b.GameID || a.DiscoveryProfile != b.DiscoveryProfile || len(a.Peers) != len(b.Peers) {
 		return false
 	}
 	for i, x := range a.Peers {
@@ -247,7 +264,7 @@ func makePaths(dir string, s Snapshot, o Options) ([]engine.Peer, error) {
 		if e := os.WriteFile(f, []byte(p.Lease+"\n"), 0600); e != nil {
 			return nil, e
 		}
-		result = append(result, engine.Peer{IP: p.IP, PublicKey: p.WireguardKey, RelayURL: s.RelayURL, RelayTokenFile: f, RelayCA: o.RelayCA, ICE: s.ICE, STUNURL: s.StunURL, ICEInterfaces: o.ICEInterfaces})
+		result = append(result, engine.Peer{IP: p.IP, Discovery: s.DiscoveryProfile != "" && (runtime.GOOS == "windows" || runtime.GOOS == "linux"), PublicKey: p.WireguardKey, RelayURL: s.RelayURL, RelayTokenFile: f, RelayCA: o.RelayCA, ICE: s.ICE, STUNURL: s.StunURL, ICEInterfaces: o.ICEInterfaces})
 	}
 	return result, nil
 }
@@ -312,6 +329,19 @@ func start(ctx context.Context, s Snapshot, o Options) (*active, error) {
 		port = 51821
 	}
 	cfg := engine.Config{Interface: iface, IP: s.LocalIP, ListenPort: port, WGKeyFile: filepath.Join(o.StateDir, "wireguard.key"), IdentityKeyFile: filepath.Join(o.StateDir, "identity.key"), StatusFile: filepath.Join(dir, "status.json")}
+	cfg.ProtectHosts = o.ProtectHosts
+	if s.DiscoveryProfile != "" && (runtime.GOOS == "windows" || runtime.GOOS == "linux") {
+		local, e := netip.ParseAddr(s.LocalIP)
+		if e != nil || !local.Is4() {
+			return nil, ErrInvalidSnapshot
+		}
+		network := netip.PrefixFrom(local, 24).Masked()
+		b := local.As4()
+		b[3] = 255
+		cfg.NetworkCIDR = network.String()
+		// Only a fixed reviewed profile, never arbitrary server-supplied routes or ports.
+		cfg.Discovery = protocol.DiscoveryPolicy{Rules: []protocol.DiscoveryRule{{Destination: netip.AddrFrom4(b).String(), Port: 6112}}}
+	}
 	cfg.Peers, e = makePaths(dir, s, o)
 	if e != nil {
 		return nil, e
@@ -328,7 +358,7 @@ func start(ctx context.Context, s Snapshot, o Options) (*active, error) {
 	return a, nil
 }
 func status(a *active, fallback, errText string, measurements map[string]int) Status {
-	result := Status{State: fallback, RoomID: a.s.RoomID, NetworkID: a.s.NetworkID, Revision: a.s.Revision, IP: a.s.LocalIP, RelayNode: a.s.RelayNode, RelayRegion: a.s.RelayRegion, PathUpdates: a.pathUpdates, ExpiresAt: a.s.ValidUntil, Peers: []PeerStatus{}, Error: errText}
+	result := Status{State: fallback, RoomID: a.s.RoomID, GameID: a.s.GameID, NetworkID: a.s.NetworkID, Revision: a.s.Revision, IP: a.s.LocalIP, RelayNode: a.s.RelayNode, RelayRegion: a.s.RelayRegion, PathUpdates: a.pathUpdates, DiscoveryProfile: a.s.DiscoveryProfile, ExpiresAt: a.s.ValidUntil, Peers: []PeerStatus{}, Error: errText}
 	for _, candidate := range a.s.RelayCandidates {
 		var probe *int
 		if v, ok := measurements[candidate.ID]; ok {
@@ -345,6 +375,9 @@ func status(a *active, fallback, errText string, measurements map[string]int) St
 		return result
 	}
 	result.State = "running"
+	if s.Discovery != nil {
+		result.Discovery = &DiscoveryStatus{Sent: s.Discovery.Sent, Received: s.Discovery.Received, Dropped: s.Discovery.Dropped}
+	}
 	for _, p := range s.Peers {
 		user := ""
 		for _, peer := range a.s.Peers {

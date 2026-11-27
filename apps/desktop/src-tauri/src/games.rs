@@ -387,6 +387,23 @@ impl GameLibrary {
     }
 
     pub fn launch(&self, dir: &Path, id: &str) -> Result<Option<u32>, String> {
+        self.launch_inner(dir, id, None, || Ok(()))
+    }
+    pub fn launch_cs_peer<F: FnOnce() -> Result<(), String>>(
+        &self,
+        dir: &Path,
+        target: std::net::SocketAddrV4,
+        validate: F,
+    ) -> Result<Option<u32>, String> {
+        self.launch_inner(dir, "cs16", Some(target), validate)
+    }
+    fn launch_inner<F: FnOnce() -> Result<(), String>>(
+        &self,
+        dir: &Path,
+        id: &str,
+        target: Option<std::net::SocketAddrV4>,
+        validate: F,
+    ) -> Result<Option<u32>, String> {
         let p = profile(id)?;
         #[cfg(windows)]
         {
@@ -405,7 +422,7 @@ impl GameLibrary {
             if inspected.sha256 != saved.sha256 {
                 return Err("Game executable has changed. Select and confirm the updated file before launching.".into());
             }
-            if !windows::confirm_launch(&p, &inspected) {
+            if !windows::confirm_launch(&p, &inspected, target) {
                 return Ok(None);
             }
             // Check again after the native confirmation. No downloaded commands, scripts,
@@ -414,7 +431,8 @@ impl GameLibrary {
             if actual != inspected {
                 return Err("Executable changed during confirmation".into());
             }
-            let mut command = launch_command(&p, Path::new(&actual.path))?;
+            validate()?;
+            let mut command = launch_command(&p, Path::new(&actual.path), target)?;
             let child = command.spawn().map_err(err)?;
             let pid = child.id();
             r.child = Some(child);
@@ -423,14 +441,18 @@ impl GameLibrary {
         }
         #[cfg(not(windows))]
         {
-            let _ = (dir, p);
+            let _ = (dir, p, target, validate);
             Err("Game launch currently requires Windows".into())
         }
     }
 }
 
 #[cfg(any(windows, test))]
-fn launch_command(p: &Profile, path: &Path) -> Result<Command, String> {
+fn launch_command(
+    p: &Profile,
+    path: &Path,
+    target: Option<std::net::SocketAddrV4>,
+) -> Result<Command, String> {
     let parent = path.parent().ok_or("Executable directory missing")?;
     let mut command = Command::new(path);
     command
@@ -447,6 +469,12 @@ fn launch_command(p: &Profile, path: &Path) -> Result<Command, String> {
             .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case("hl.exe"))
     {
         command.args(["-game", "cstrike"]);
+    }
+    if let Some(addr) = target {
+        if p.id != "cs16" || addr.port() == 0 {
+            return Err("Direct join is restricted to CS 1.6".into());
+        }
+        command.arg("+connect").arg(addr.to_string());
     }
     Ok(command)
 }
@@ -508,7 +536,7 @@ mod tests {
         fs::create_dir(dir.join("cstrike")).unwrap();
         let p = profile("cs16").unwrap();
         assert!(inspect(&p, &exe).is_ok());
-        let command = launch_command(&p, &exe).unwrap();
+        let command = launch_command(&p, &exe, None).unwrap();
         assert_eq!(
             command
                 .get_args()
@@ -517,6 +545,20 @@ mod tests {
             vec!["-game", "cstrike"]
         );
         assert_eq!(command.get_current_dir(), Some(dir.as_path()));
+        let join = launch_command(&p, &exe, Some("10.160.1.2:27015".parse().unwrap())).unwrap();
+        assert_eq!(
+            join.get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["-game", "cstrike", "+connect", "10.160.1.2:27015"]
+        );
+        assert!(launch_command(
+            &profile("redalert2").unwrap(),
+            &exe,
+            Some("10.160.1.2:27015".parse().unwrap())
+        )
+        .is_err());
+
         fs::write(&exe, b"not executable").unwrap();
         assert!(inspect(&p, &exe).is_err());
         assert!(profile("unknown").is_err());

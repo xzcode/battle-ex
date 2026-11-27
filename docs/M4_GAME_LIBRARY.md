@@ -1,5 +1,7 @@
 # M4.1–M4.3: local game library and room build reports
 
+Historical baseline: see [M4 network service and discovery](M4_NETWORK_SERVICE_AND_DISCOVERY.md) for the later Windows service, experimental discovery and CS peer join implementation.
+
 2026-11-27. Development implementation. Windows native acceptance remains
 open; no claim that these games already work over the virtual network.
 

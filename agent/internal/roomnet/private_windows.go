@@ -24,13 +24,24 @@ func secureNewDirectory(path string) error {
 	}
 	return windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil)
 }
-func checkPrivate(path string, dir bool) error {
+func checkPrivate(path string, dir bool) error          { return checkPrivateLimit(path, dir, 4096) }
+func CheckPrivateStatePath(path string, dir bool) error { return checkPrivate(path, dir) }
+func CheckServiceBinary(path string) error              { return checkPrivateLimit(path, false, 64*1024*1024) }
+func checkPrivateLimit(path string, dir bool, limit int64) error {
 	st, e := os.Lstat(path)
 	if e != nil {
 		return e
 	}
-	if (dir && !st.IsDir()) || (!dir && !st.Mode().IsRegular()) || st.Mode()&os.ModeSymlink != 0 || (!dir && st.Size() > 4096) {
+	if (dir && !st.IsDir()) || (!dir && !st.Mode().IsRegular()) || st.Mode()&os.ModeSymlink != 0 || (!dir && st.Size() > limit) {
 		return errors.New("unsafe private state path")
+	}
+	wide, e := windows.UTF16PtrFromString(path)
+	if e != nil {
+		return e
+	}
+	attrs, e := windows.GetFileAttributes(wide)
+	if e != nil || attrs&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		return errors.New("unsafe private reparse point")
 	}
 	sd, e := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
 	if e != nil {

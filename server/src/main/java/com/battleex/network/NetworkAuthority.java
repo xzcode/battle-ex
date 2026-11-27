@@ -29,7 +29,7 @@ public final class NetworkAuthority {
                            long validUntil, String localIP, String identityKey, String wireguardKey,
                            String relayNode, String relayURL, String stunURL, boolean ice,
                            List<Peer> peers, String nonce, String sessionDigest, String relayRegion,
-                           List<RelayDirectory.Candidate> relayCandidates) {}
+                           List<RelayDirectory.Candidate> relayCandidates, String gameId, String discoveryProfile) {}
     public record Device(UUID userId, String session, String identity, String wireguard, long seen) {}
     public record RoomState(int subnet, String fingerprint, long revision, long leaseExpiry,
                              Map<UUID,Integer> addresses, String relayNode, long changedAt) {}
@@ -46,6 +46,7 @@ public final class NetworkAuthority {
     private final String issuer;
     private final RelayDirectory relays;
     private final boolean ice;
+    private final boolean gameDiscovery;
     private final String directoryFile;
     private final boolean clustered;
     private final int retentionMinutes;
@@ -67,8 +68,9 @@ public final class NetworkAuthority {
             @Value("${battle.network.relay-directory-file:}") String directoryFile,
             @Value("${battle.network.lease-seconds:840}") long leaseSeconds,
             @Value("${battle.network.metrics-retention-minutes:1440}") int retentionMinutes,
-            @Value("${battle.state-mode:memory}") String stateMode) throws Exception {
-        this.platform=platform; this.json=json; this.ice=ice; this.clustered=stateMode.equals("mongo");
+            @Value("${battle.state-mode:memory}") String stateMode,
+            @Value("${battle.network.game-discovery:false}") boolean gameDiscovery) throws Exception {
+        this.platform=platform; this.json=json; this.ice=ice; this.clustered=stateMode.equals("mongo");this.gameDiscovery=gameDiscovery;
         if(leaseSeconds<30||leaseSeconds>MAX_LEASE_SECONDS)throw new IllegalArgumentException("lease seconds must be 30–840");
         this.leaseSeconds=leaseSeconds;this.directoryFile=directoryFile;this.retentionMinutes=retentionMinutes;
         relays=new RelayDirectory(json,directoryFile,ice,node,relayURL,stunURL,secretFile,retentionMinutes);
@@ -120,7 +122,7 @@ public final class NetworkAuthority {
         }
     }
     public String configurationFingerprint(){
-        return sha256("battle-authority-v1:"+issuer+":"+ice+":"+leaseSeconds+":"+retentionMinutes+":"+relays.configurationFingerprint());
+        return sha256("battle-authority-v1:"+issuer+":"+ice+":"+leaseSeconds+":"+retentionMinutes+":"+relays.configurationFingerprint()+(gameDiscovery?":discovery-v1":""));
     }
     public boolean enabled(){return signer!=null;}
     public String issuer(){return issuer;}
@@ -171,7 +173,8 @@ public final class NetworkAuthority {
             var selected=relays.config(state.relayNode());
             Snapshot snapshot=new Snapshot(1,room.id(),room.networkId(),state.revision(),now,now+SNAPSHOT_SECONDS,
                     ip(state.subnet(),state.addresses().get(device.userId())),device.identity(),device.wireguard(),
-                    selected.id(),selected.relayURL(),ice?selected.stunURL():"",ice,List.copyOf(peers),nonce,ctx.sessionDigest(),selected.region(),relays.candidates(now));
+                    selected.id(),selected.relayURL(),ice?selected.stunURL():"",ice,List.copyOf(peers),nonce,ctx.sessionDigest(),selected.region(),relays.candidates(now),room.gameId(),
+                    gameDiscovery&&"warcraft3".equals(room.gameId())?"warcraft3-directed-v1":"");
             byte[] payload=bytes(snapshot);
             return new SignedSnapshot(B64.encodeToString(payload),B64.encodeToString(sign(SNAP_DOMAIN,payload)));
         }

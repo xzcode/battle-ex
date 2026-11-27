@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/xzcode/battle-ex/agent/internal/roomnet"
+	"github.com/xzcode/battle-ex/agent/internal/serviceipc"
 	"io"
 	"os"
 	"os/signal"
@@ -16,6 +17,14 @@ import (
 )
 
 func run() error {
+	if len(os.Args) == 2 {
+		switch os.Args[1] {
+		case "--windows-service":
+			return serviceipc.RunService()
+		case "--service-client":
+			return serviceipc.RunClient(os.Stdin, os.Stdout)
+		}
+	}
 	var o roomnet.Options
 	var port uint
 	var ifaces string

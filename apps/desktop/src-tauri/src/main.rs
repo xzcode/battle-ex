@@ -123,6 +123,31 @@ async fn game_adopt(
         .map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+async fn game_join_cs(
+    app: AppHandle,
+    games: State<'_, GameLibrary>,
+    network: State<'_, NetworkAgent>,
+    room_id: String,
+    peer_id: String,
+    port: u16,
+) -> Result<Option<u32>, String> {
+    let games = games.inner().clone();
+    let network = network.inner().clone();
+    let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let target = network.cs_peer(&room_id, &peer_id, port)?;
+        games.launch_cs_peer(&dir, target, || {
+            if network.cs_peer(&room_id, &peer_id, port)? != target {
+                return Err("Room peer changed during confirmation".into());
+            }
+            Ok(())
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(NetworkAgent::default())
@@ -137,7 +162,8 @@ fn main() {
             game_adopt,
             game_verify,
             game_remove,
-            game_launch
+            game_launch,
+            game_join_cs
         ])
         .build(tauri::generate_context!())
         .expect("could not initialize Battle EX")

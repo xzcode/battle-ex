@@ -7,7 +7,9 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/apps/desktop/src-tauri/src/games"
 cp "$root/game-catalog.json" "$work/apps/desktop/"
-cp "$root/src-tauri/src/games.rs" "$work/apps/desktop/src-tauri/src/lib.rs"
+cp "$root/src-tauri/src/games.rs" "$work/apps/desktop/src-tauri/src/games.rs"
+cp "$root/src-tauri/src/network.rs" "$work/apps/desktop/src-tauri/src/network.rs"
+printf 'pub mod games;\npub mod network;\n' > "$work/apps/desktop/src-tauri/src/lib.rs"
 cp "$root/src-tauri/src/games/windows.rs" "$work/apps/desktop/src-tauri/src/games/windows.rs"
 python3 - "$root/src-tauri/Cargo.toml" "$work/apps/desktop/src-tauri/Cargo.toml" <<'PY'
 from pathlib import Path

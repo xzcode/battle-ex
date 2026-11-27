@@ -8,9 +8,10 @@ P.add_argument("--inside", action="store_true")
 P.add_argument("--ice", action="store_true")
 P.add_argument("--multi", action="store_true")
 P.add_argument("--refresh", action="store_true")
+P.add_argument("--discovery", action="store_true")
 args = P.parse_args()
 if not args.inside:
-    os.execvp("unshare", ["unshare","--net","--",sys.executable,__file__,"--inside",*(["--ice"] if args.ice else []),*(["--multi"] if args.multi else []),*(["--refresh"] if args.refresh else [])])
+    os.execvp("unshare", ["unshare","--net","--",sys.executable,__file__,"--inside",*(["--ice"] if args.ice else []),*(["--multi"] if args.multi else []),*(["--refresh"] if args.refresh else []),*(["--discovery"] if args.discovery else [])])
 # This script never creates routes or listeners in the host network namespace.
 assert os.readlink("/proc/self/ns/net") != os.readlink("/proc/1/ns/net"), "isolated namespace required"
 procs = []
@@ -103,6 +104,7 @@ try:
              "BATTLE_NETWORK_RELAY_NODE":"battle-relay","BATTLE_NETWORK_RELAY_URL":RELAY,"BATTLE_NETWORK_ICE":str(args.ice).lower(),
              "BATTLE_NETWORK_STUN_URL":"stun:192.0.2.1:3478"}
         if args.refresh:env["BATTLE_NETWORK_LEASE_SECONDS"]="35"
+        if args.discovery:env["BATTLE_NETWORK_GAME_DISCOVERY"]="true"
         if args.multi:
             backup_file=d/"relay2.secret"
             backup_file.write_text(os.urandom(32).hex()+"\n");os.chmod(backup_file,0o600)
@@ -150,7 +152,7 @@ try:
         assert api("/network/info",tokens["a"])["issuer"]==issuer
         api("/network/device",tokens["a"],{"identityKey":"01"*32,"wireguardKey":"02"*32,"proof":"bad"},status=403)
         api("/network/snapshot",tokens["a"],{"nonce":os.urandom(32).hex()},status=403)
-        r1=api("/rooms",tokens["a"],{"name":"Room one","gameId":"custom","capacity":8,"visibility":"PUBLIC"},status=201)
+        r1=api("/rooms",tokens["a"],{"name":"Room one","gameId":"warcraft3" if args.discovery else "custom","capacity":8,"visibility":"PUBLIC"},status=201)
         for name in ("b","c"):api("/rooms/"+r1["id"]+"/join",tokens[name],{})
         r2=api("/rooms",tokens["d"],{"name":"Room two","gameId":"custom","capacity":8,"visibility":"PRIVATE"},status=201)
         for name in ns:agents.append(Agent(name,ns[name],tokens[name],issuer,d,cert))
@@ -201,6 +203,37 @@ for kind,port in [(socket.SOCK_STREAM,39101),(socket.SOCK_DGRAM,39100)]:
             for p in echo_procs:terminate(p)
             print("PASS: TCP and UDP application payloads on both peer paths",flush=True)
             assert a.ping(ips["d"],False) and other.ping(ips["a"],False)
+            if args.discovery:
+                # Real socket broadcast on the virtual /24, not a manufactured
+                # game result. Allowed UDP 6112 must reach both overlay peers,
+                # including the peer using WSS fallback; another port and the
+                # separate room must not receive the test payload.
+                recv_code="""import socket,sys
+s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+s.bind(("0.0.0.0",int(sys.argv[1])));s.settimeout(4)
+print("ready",flush=True)
+try:
+    b,addr=s.recvfrom(1200);print(addr[0]+" "+b.decode(),flush=True)
+except socket.timeout:print("timeout",flush=True)
+"""
+                send_code="""import socket,sys
+s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.setsockopt(socket.SOL_SOCKET,socket.SO_BROADCAST,1)
+s.bind((sys.argv[1],0));s.sendto(b"battle-discovery-test",(sys.argv[2],int(sys.argv[3])))
+"""
+                listeners=[]
+                for name,port in [("b",6112),("c",6112),("d",6112),("b",6113)]:
+                    process=spawn(ns[name]+[sys.executable,"-u","-c",recv_code,str(port)],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True)
+                    assert process.stdout.readline().strip()=="ready";listeners.append(process)
+                broadcast=ips["a"].rsplit(".",1)[0]+".255"
+                cmd(*ns["a"],sys.executable,"-c",send_code,ips["a"],broadcast,6112)
+                cmd(*ns["a"],sys.executable,"-c",send_code,ips["a"],broadcast,6113)
+                for i,process in enumerate(listeners):
+                    result=process.stdout.readline().strip();assert process.wait(6)==0
+                    assert result==(ips["a"]+" battle-discovery-test" if i<2 else "timeout"),(i,result)
+                wait_for(lambda:a.latest.get("discovery",{}).get("sent",0)>=2 and a.latest.get("discovery",{}).get("dropped",0)>=1,"discovery counters",10)
+                assert not other.latest.get("discovery")
+                print("PASS: allowlisted directed UDP discovery over direct/relay paths, blocked other port and room isolation",flush=True)
+
             # Cross-room snapshot content must exclude all other room members.
             nonce=os.urandom(32).hex()
             signed=api("/network/snapshot",tokens["a"],{"nonce":nonce})

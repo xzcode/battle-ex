@@ -171,8 +171,11 @@ pub fn elevated() -> Result<bool, String> {
         Ok(info.TokenIsElevated != 0)
     }
 }
-pub fn confirm_launch(p: &Profile, i: &Install) -> bool {
-    let message=wide(&format!("Launch this local executable? / 启动此本地程序？\n\n{} / {}\n{}\nSHA-256: {}\n\nOnly continue if you trust this installation. / 请确认信任此安装。",p.en,p.zh,i.path,i.sha256));
+pub fn confirm_launch(p: &Profile, i: &Install, target: Option<std::net::SocketAddrV4>) -> bool {
+    let destination = target
+        .map(|a| format!("\nJoin / 加入: {a}"))
+        .unwrap_or_default();
+    let message=wide(&format!("Launch this local executable? / 启动此本地程序？\n\n{} / {}\n{}\nSHA-256: {}{}\n\nOnly continue if you trust this installation. / 请确认信任此安装。",p.en,p.zh,i.path,i.sha256,destination));
     let title = wide("Battle EX — Confirm launch");
     unsafe {
         MessageBoxW(

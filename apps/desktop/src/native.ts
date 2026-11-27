@@ -3,7 +3,7 @@ export interface PeerNetworkStatus {
  userId:string;ip:string;mode:string;handshakeUnix:string;rxBytes:string;txBytes:string;rttMillis:number|null;relayConnected:boolean;jitterMillis?:number|null;probeLossPct?:number|null;probeSamples?:number
 }
 export interface NetworkStatus {
- state:string;roomId?:string;networkId?:string;revision?:number;ip?:string;expiresAt?:number;relayNode?:string;relayRegion?:string;relayCandidates?:{id:string;region:string;probeMillis:number|null}[];peers:PeerNetworkStatus[]|null;error?:string
+ state:string;roomId?:string;networkId?:string;revision?:number;ip?:string;expiresAt?:number;relayNode?:string;relayRegion?:string;gameId?:string;discoveryProfile?:string;discovery?:{sent:number;received:number;dropped:number};relayCandidates?:{id:string;region:string;probeMillis:number|null}[];peers:PeerNetworkStatus[]|null;error?:string
 }
 export interface NetworkInfo {enabled:boolean;issuer:string}
 export const nativeAvailable=isTauri()
@@ -22,3 +22,5 @@ export function adoptGame(id:string,path:string){return invoke<GameInstall|null>
 export function verifyGame(id:string){return invoke<boolean>('game_verify',{id})}
 export function removeGame(id:string){return invoke<void>('game_remove',{id})}
 export function launchGame(id:string){return invoke<number|null>('game_launch',{id})}
+
+export function joinCsPeer(roomId:string,peerId:string,port:number){return invoke<number|null>('game_join_cs',{roomId,peerId,port})}

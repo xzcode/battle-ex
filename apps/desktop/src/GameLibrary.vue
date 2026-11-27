@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import {computed,onMounted,onBeforeUnmount,ref,watch} from 'vue'
-import {nativeAvailable,listGames,detectGame,chooseGame,adoptGame,verifyGame,removeGame,launchGame,type GameEntry} from './native'
+import {nativeAvailable,listGames,detectGame,chooseGame,adoptGame,verifyGame,removeGame,launchGame,joinCsPeer,type GameEntry,type PeerNetworkStatus} from './native'
 import type {Language} from './i18n'
 import type {GameBuild} from './api'
 import catalog from '../game-catalog.json'
 
-const props=defineProps<{language:Language;initialGame:string;roomGame?:string;roomId?:string;roomState?:string;reportedBuild?:GameBuild|null;networkReady:boolean;publishBuild:(roomId:string,build:GameBuild|null)=>Promise<void>}>()
+const props=defineProps<{language:Language;initialGame:string;roomGame?:string;roomId?:string;roomState?:string;reportedBuild?:GameBuild|null;networkReady:boolean;networkPeers:PeerNetworkStatus[];memberNames:Record<string,string>;publishBuild:(roomId:string,build:GameBuild|null)=>Promise<void>}>()
 const l=(en:string,zh:string)=>props.language==='zh'?zh:en
 const selected=ref(catalog.some(p=>p.id===props.initialGame)?props.initialGame:'warcraft3')
 const profile=computed(()=>catalog.find(p=>p.id===selected.value)!)
@@ -18,7 +18,7 @@ let timer:ReturnType<typeof setInterval>|undefined
 const windowsDesktop=nativeAvailable&&navigator.userAgent.toLowerCase().includes('windows')
 const discovery=computed(()=>{
  switch(profile.value.discovery){
-  case 'broadcast-pending':return l('LAN broadcast discovery is not yet enabled on Windows.','Windows 局域网广播发现尚未接入。')
+  case 'broadcast-pending':return l('Experimental directed UDP discovery can be enabled by the server; Windows real-game testing is pending.','服务端可启用实验性定向 UDP 发现；Windows 真机游戏尚未验收。')
   case 'edition-pending':return l('Multiplayer discovery depends on the exact edition and installed LAN components.','联机发现取决于具体版本及已安装的局域网组件。')
   default:return l('Manual IPv4 connection: use the room peer address in the game, if supported.','手动 IPv4 连接：若游戏支持直接 IP，请使用房间玩家虚拟地址。')
  }
@@ -76,6 +76,14 @@ const withdraw=()=>perform(async()=>{
  if(props.roomId)await props.publishBuild(props.roomId,null)
  notice.value=l('Build report removed.','已撤回版本报告。')
 })
+const csPeer=ref(''),csPort=ref(27015)
+const csPeers=computed(()=>props.networkReady&&props.roomGame==='cs16'?props.networkPeers:[])
+watch(csPeers,peers=>{if(!peers.some(p=>p.userId===csPeer.value))csPeer.value=peers[0]?.userId??''},{immediate:true})
+const joinCs=()=>perform(async()=>{
+ if(!props.roomId||!csPeer.value||!Number.isInteger(csPort.value)||csPort.value<1||csPort.value>65535)throw new Error(l('Select a room peer and valid port.','请选择房间成员及有效端口。'))
+ const pid=await joinCsPeer(props.roomId,csPeer.value,csPort.value)
+ if(pid!=null)notice.value=l('Game process launched; game connection is not yet confirmed.','游戏进程已启动；尚未确认游戏内连接。')
+})
 const launch=()=>perform(async()=>{const pid=await launchGame(selected.value);if(pid!=null)notice.value=l('Local process launched (PID ','本地进程已启动（PID ')+pid+')'})
 async function copy(text:string){
  try{await navigator.clipboard.writeText(text);notice.value=l('Copied','已复制')}
@@ -124,6 +132,15 @@ onBeforeUnmount(()=>{disposed=true;if(timer)clearInterval(timer)})
        <button class="secondary" :disabled="!windowsDesktop||busy||!installation||roomState!=='WAITING'" @click="publish">{{l('Verify and share build','校验并分享版本')}}</button>
        <button v-if="reportedBuild" class="secondary" :disabled="busy||roomState!=='WAITING'" @click="withdraw">{{l('Withdraw report','撤回报告')}}</button>
       </div>
+     </div>
+     <div v-if="selected==='cs16'&&roomGame==='cs16'" class="game-note">
+      <strong>{{l('Join a peer-hosted CS server','加入成员的 CS 服务器')}}</strong>
+      <p>{{l('The peer must already be hosting a compatible LAN server. Select its room address and game port; the native launcher rechecks the authorized peer.','对方必须已开启兼容的局域网服务器。请选择成员及游戏端口；原生启动器会重新校验该成员的授权地址。')}}</p>
+      <div class="game-info-grid">
+       <label>{{l('Room peer','房间成员')}}<select v-model="csPeer" :disabled="!csPeers.length||busy"><option v-for="peer in csPeers" :key="peer.userId" :value="peer.userId">{{memberNames[peer.userId]||peer.ip}} · {{peer.ip}}</option></select></label>
+       <label>{{l('Game port','游戏端口')}}<input v-model.number="csPort" type="number" min="1" max="65535" step="1"></label>
+      </div>
+      <button class="secondary" :disabled="!windowsDesktop||busy||!installation||!!entry?.pid||!csPeer||!networkReady" @click="joinCs">{{l('Launch and join','启动并加入')}}</button>
      </div>
      <div class="game-controls bottom"><button class="secondary" :disabled="!windowsDesktop||busy||!installation||entry?.state==='missing'" @click="verify">{{l('Verify file','校验文件')}}</button><button class="primary" :disabled="!windowsDesktop||busy||!installation||!!entry?.pid||entry?.state==='missing'" @click="launch">{{l('Launch game','启动游戏')}}</button></div>
      <p class="muted small">{{l('Game files and paths stay on this computer. Battle EX launches only the selected local executable after a native confirmation. It never distributes games or automatically terminates them.','游戏文件及路径只保存在本机。Battle EX 仅在原生确认后启动本机选中的程序，不分发游戏，也不会自动结束游戏进程。')}}</p>

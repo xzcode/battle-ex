@@ -47,24 +47,26 @@ type Peer struct {
 	Lease        string `json:"lease"`
 }
 type Snapshot struct {
-	Version         int              `json:"version"`
-	RoomID          string           `json:"roomId"`
-	NetworkID       string           `json:"networkId"`
-	Revision        int64            `json:"revision"`
-	IssuedAt        int64            `json:"issuedAt"`
-	ValidUntil      int64            `json:"validUntil"`
-	LocalIP         string           `json:"localIP"`
-	IdentityKey     string           `json:"identityKey"`
-	WireguardKey    string           `json:"wireguardKey"`
-	RelayNode       string           `json:"relayNode"`
-	RelayRegion     string           `json:"relayRegion"`
-	RelayCandidates []RelayCandidate `json:"relayCandidates"`
-	RelayURL        string           `json:"relayURL"`
-	StunURL         string           `json:"stunURL"`
-	ICE             bool             `json:"ice"`
-	Peers           []Peer           `json:"peers"`
-	Nonce           string           `json:"nonce"`
-	SessionDigest   string           `json:"sessionDigest"`
+	Version          int              `json:"version"`
+	RoomID           string           `json:"roomId"`
+	NetworkID        string           `json:"networkId"`
+	Revision         int64            `json:"revision"`
+	IssuedAt         int64            `json:"issuedAt"`
+	ValidUntil       int64            `json:"validUntil"`
+	LocalIP          string           `json:"localIP"`
+	IdentityKey      string           `json:"identityKey"`
+	WireguardKey     string           `json:"wireguardKey"`
+	RelayNode        string           `json:"relayNode"`
+	RelayRegion      string           `json:"relayRegion"`
+	RelayCandidates  []RelayCandidate `json:"relayCandidates"`
+	RelayURL         string           `json:"relayURL"`
+	StunURL          string           `json:"stunURL"`
+	ICE              bool             `json:"ice"`
+	Peers            []Peer           `json:"peers"`
+	Nonce            string           `json:"nonce"`
+	SessionDigest    string           `json:"sessionDigest"`
+	GameID           string           `json:"gameId"`
+	DiscoveryProfile string           `json:"discoveryProfile"`
 }
 type signed struct {
 	Payload   string `json:"payload"`
@@ -235,6 +237,12 @@ func (c *Client) validate(s *Snapshot, nonce string, now time.Time) error {
 		return fail
 	}
 	prefix := netip.PrefixFrom(local, 24).Masked()
+	if local.As4()[3] == 0 || local.As4()[3] == 255 {
+		return fail
+	}
+	if s.DiscoveryProfile != "" && (s.GameID != "warcraft3" || s.DiscoveryProfile != "warcraft3-directed-v1") {
+		return fail
+	}
 	relay, e := url.Parse(s.RelayURL)
 	if e != nil || relay.Scheme != "wss" || relay.Host == "" || relay.User != nil || relay.Path != "/relay/v1" || relay.RawQuery != "" || relay.Fragment != "" {
 		return fail
@@ -255,7 +263,7 @@ func (c *Client) validate(s *Snapshot, nonce string, now time.Time) error {
 	users := map[string]bool{}
 	for _, p := range s.Peers {
 		a, e := netip.ParseAddr(p.IP)
-		if e != nil || !a.Is4() || !prefix.Contains(a) || ips[p.IP] || p.UserID == "" || users[p.UserID] || keys[p.IdentityKey] || keys[p.WireguardKey] || p.IdentityKey == p.WireguardKey || !publicKey(p.IdentityKey) || !publicKey(p.WireguardKey) {
+		if e != nil || !a.Is4() || !prefix.Contains(a) || a.As4()[3] == 0 || a.As4()[3] == 255 || ips[p.IP] || p.UserID == "" || users[p.UserID] || keys[p.IdentityKey] || keys[p.WireguardKey] || p.IdentityKey == p.WireguardKey || !publicKey(p.IdentityKey) || !publicKey(p.WireguardKey) {
 			return fail
 		}
 		lease, e := core.Verify(c.issuer, p.Lease, now)
@@ -277,4 +285,39 @@ func (c *Client) Disconnect() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_, _ = c.post(ctx, "disconnect", map[string]string{}, nil)
+}
+
+// VerifyAccount binds a local service session to an authenticated account
+// without trusting the IPC caller's user ID or accepting an arbitrary URL.
+func VerifyAccount(ctx context.Context, client *http.Client, c Credentials, expected string) error {
+	origin, e := Origin(c.Origin)
+	if e != nil {
+		return e
+	}
+	req, e := http.NewRequestWithContext(ctx, http.MethodGet, origin+"/api/v1/lobby", nil)
+	if e != nil {
+		return e
+	}
+	req.Header.Set("Authorization", "Bearer "+c.Token)
+	response, e := client.Do(req)
+	if e != nil {
+		return e
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return ErrUnauthorized
+	}
+	raw, e := io.ReadAll(io.LimitReader(response.Body, 1024*1024+1))
+	if e != nil || len(raw) > 1024*1024 {
+		return ErrUnauthorized
+	}
+	var v struct {
+		User struct {
+			ID string `json:"id"`
+		} `json:"user"`
+	}
+	if json.Unmarshal(raw, &v) != nil || v.User.ID != expected {
+		return ErrUnauthorized
+	}
+	return nil
 }
