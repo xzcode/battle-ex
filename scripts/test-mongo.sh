@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+name="battle-ex-test-$(date +%s)-$RANDOM"
+password="$(openssl rand -hex 24)"
+image="${BATTLE_MONGO_TEST_IMAGE:-mongo:8.0.15}"
+cleanup(){ docker rm -f "$name" >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+docker run -d --rm --name "$name" -p 127.0.0.1::27017 --tmpfs /data/db:rw,size=512m --tmpfs /data/configdb:rw,size=64m -e MONGO_INITDB_ROOT_USERNAME=battle_test -e "MONGO_INITDB_ROOT_PASSWORD=$password" "$image" >/dev/null
+ready=0
+for i in {1..40}; do
+  if docker exec "$name" mongosh --quiet -u battle_test -p "$password" --authenticationDatabase admin --eval 'db.adminCommand({ping:1}).ok' 2>/dev/null | grep -qx 1; then ready=1;break;fi
+  sleep 1
+done
+test "$ready" = 1
+port="$(docker port "$name" 27017/tcp | awk -F: '{print $NF;exit}')"
+export BATTLE_MONGO_URI="mongodb://battle_test:$password@127.0.0.1:$port/?authSource=admin&serverSelectionTimeoutMS=5000"
+export BATTLE_MONGO_DB=battle_ex_isolated_test BATTLE_TEST_PERSISTENCE=true
+node scripts/test-platform.mjs

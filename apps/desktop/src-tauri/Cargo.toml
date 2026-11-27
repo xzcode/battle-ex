@@ -1,0 +1,13 @@
+[package]
+name = "battle-ex"
+version = "0.1.0"
+edition = "2021"
+description = "Battle EX LAN game platform"
+
+[build-dependencies]
+tauri-build = { version = "=2.7.6", features = [] }
+[dependencies]
+tauri = { version = "=2.12.7", features = [] }
+[profile.release]
+strip = true
+lto = true

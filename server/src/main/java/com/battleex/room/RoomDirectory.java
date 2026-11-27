@@ -162,6 +162,12 @@ public final class RoomDirectory {
         return r.view();
     }
 
+    public synchronized RoomView activeRoom(UUID actor) {
+        Objects.requireNonNull(actor, "actor");
+        UUID id = active.get(actor);
+        return id == null ? null : memberRoom(actor, id).view();
+    }
+
     public synchronized RoomView view(UUID actor, UUID roomId) {
         return memberRoom(actor, roomId).view();
     }

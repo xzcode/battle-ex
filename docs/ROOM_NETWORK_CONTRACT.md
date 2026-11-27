@@ -23,6 +23,6 @@ A future catalog entry identifies exact legal user-installed game editions, comp
 
 ## Implementation status
 
-M1 first slice: Java 21 dependency-free synchronized in-memory room domain, protected member/host operations, atomic capacity, readiness, invitation rotation, public lobby summaries and authorized membership snapshots. Test with `JAVA_HOME=/path/to/jdk21 bash scripts/test-room-domain.sh`.
+M1 application baseline: Java 21 room domain plus Spring Boot REST and authenticated WebSocket snapshots, single-instance sessions, optional MongoDB account persistence, Vue desktop frontend and Tauri wrapper source. See [M1 implementation](M1_IMPLEMENTATION.md).
 
-No Spring HTTP/WebSocket endpoints, persistent accounts, authenticated session adapter, database, desktop UI, match result collection or core runtime integration yet. The actor argument is trusted internal data; exposing these methods directly to unauthenticated requests is prohibited. Production persistence, multi-instance concurrency, expiry, user disconnect/rejoin policies and cross-room packet isolation remain pending.
+The actor argument in RoomDirectory remains trusted internal data; only authenticated Platform methods expose room actions. Room IDs and membership revisions are control-plane authority, not actual packet isolation. Room-to-network snapshot compilation, device enrollment, relay lease issuance, native adapter lifecycle and packet revocation tests remain M2. No trusted match results. Native desktop installation and production multi-instance/authentication controls remain pending.
