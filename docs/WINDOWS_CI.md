@@ -4,7 +4,7 @@ Use GitHub-hosted `windows-2025` x64 VMs. The repository is public; standard run
 
 ## Workflows
 
-- `windows-build.yml`: Go native tests and vet, Node/Vue production build, full native Rust/Tauri tests, unsigned x64 desktop EXE, NSIS and MSI installers, separate network-service kit ZIP, SHA256SUMS, artifact upload.
+- `windows-build.yml`: Go native tests and vet, Node/Vue production build, full native Rust/Tauri tests, unsigned x64 desktop EXE, NSIS and MSI installers, separate network-service kit ZIP, SHA256SUMS, artifact upload. Separate fresh-VM MSI and NSIS smoke jobs verify all hashes, actually install the application, check the installed sidecar, open/close the native main window and uninstall.
 - `windows-network-test.yml`: JDK 21 WebFlux server and Go agent/relay native build; real Windows service installation and controlled loopback TLS integration, native interface, UDP relay echo and directed-discovery sender validation.
 - `release.yml`: manually confirmed development RC draft on master only, after both workflows pass for the same commit. It does not automatically publish a release or bypass game compatibility/license gates.
 
@@ -18,4 +18,18 @@ The fixture uses a short-lived loopback TLS certificate, random ephemeral issuer
 
 ## Gates
 
-Windows source/Go test executable cross-compilation, workflow YAML parsing and ICO generation were checked locally on Linux. A successful Windows Runner execution is required before describing native service/driver or installer acceptance as passed. Actual commercial-game launches, native two-client LAN discovery, IPX/L2 compatibility and production signing still require separate verification. Do not publish a stable release based on this synthetic fixture.
+Windows native build and synthetic SCM/Wintun acceptance passed (see evidence below). The new actual desktop installer-smoke jobs must also pass before claiming install/start/uninstall acceptance. Actual commercial-game launches, native two-client LAN discovery, IPX/L2 compatibility and production signing still require separate verification. Do not publish a stable release based on this synthetic fixture.
+
+## Verified baseline — 2026-11-27
+
+| Check | Exact commit | Runner result |
+| --- | --- | --- |
+| Windows desktop EXE, MSI, NSIS, service kit and checksums uploaded | `4b7c0719aa74142e63a02df3ffb72a7c558edea9` | [success](https://github.com/xzcode/battle-ex/actions/runs/45985385618) |
+| Windows SCM/Wintun synthetic network acceptance | `285c8ba33e50157f01dda281228a32cf156fbd0b` | [success](https://github.com/xzcode/battle-ex/actions/runs/45985708668) |
+
+- [Windows x64 artifact](https://github.com/xzcode/battle-ex/actions/runs/45985385618/artifacts/15190969730): 38,025,701 bytes; SHA-256 digest of uploaded archive `ae2617e829c2f6d33afb390f58d4c38a2023b7a6cb17993a0a6c556324d52238`. GitHub retention expires 2026-12-11. The MSI is 10.66 MiB; NSIS setup is 8.43 MiB.
+- [Network evidence](https://github.com/xzcode/battle-ex/actions/runs/45985708668/artifacts/15191407902): verified signed Wintun archive, real permitted and denied ordinary Windows user pipe access, SCM service and Wintun address, WSS UDP echo, directed broadcast transmit capture, unapproved port rejection, leave revocation and pipe close.
+- First unsuccessful runs exposed test-only POSIX file permissions, legacy PowerShell module/environment casing and artifact-path concatenation problems. They were fixed without skipping the tests.
+- The network fixture has one real Windows TUN and one shared-engine packet-queue peer, not two independently installed Windows games. The new MSI/NSIS smoke jobs exercise the exact artifact of the current build on fresh VMs; no installed service/game or production signing is implied. No stable Release has been published.
+
+The workflow's draft-release job depends on the complete reusable Windows build workflow (including installer smoke jobs) and network acceptance. License approval and real-game gates remain mandatory before any public production release.

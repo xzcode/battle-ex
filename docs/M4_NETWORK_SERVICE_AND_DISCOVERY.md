@@ -105,11 +105,7 @@ Rust game/network unit tests (3 including current-room CS target validation
 and fixed join arguments) and Windows target compile check passed.
 Java Maven package and Vue production build passed.
 
-All available remote hosts are Linux. No actual Windows service startup,
-named-pipe ACL/PID acceptance, Wintun driver load, native route/broadcast
-delivery, PowerShell installer execution, Windows desktop bundle or
-commercial game session has been verified. No unrestricted Windows L2/TAP
-or IPX compatibility implementation, no driver redistribution, no release.
+The original development round used Linux hosts. The later GitHub Windows Server 2025 run [45985708668](https://github.com/xzcode/battle-ex/actions/runs/45985708668) passed actual SCM service installation, ordinary Windows user pipe authorization/denial, Wintun address setup, authorized WSS UDP roundtrip, directed broadcast sender capture, other-port rejection and room-leave revocation. The [desktop build](https://github.com/xzcode/battle-ex/actions/runs/45985385618) generated and uploaded unsigned MSI/NSIS installers and the network-service kit. See [Windows CI](WINDOWS_CI.md) for exact commits/artifacts. Actual broadcast reception between two Windows clients, real commercial game sessions, full Windows L2/IPX, production signing and licensing remain gates. No public stable release or driver redistribution.
 
 Final pinned-candidate build: Go module resolves the published core commit
 without a local replace; Go race tests and vet passed, Windows x64
