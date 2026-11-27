@@ -33,3 +33,7 @@ Windows native build and synthetic SCM/Wintun acceptance passed (see evidence be
 - The network fixture has one real Windows TUN and one shared-engine packet-queue peer, not two independently installed Windows games. The new MSI/NSIS smoke jobs exercise the exact artifact of the current build on fresh VMs; no installed service/game or production signing is implied. No stable Release has been published.
 
 The workflow's draft-release job depends on the complete reusable Windows build workflow (including installer smoke jobs) and network acceptance. License approval and real-game gates remain mandatory before any public production release.
+
+### Per-format installer payloads
+
+The first MSI and NSIS smoke jobs in [45991240003](https://github.com/xzcode/battle-ex/actions/runs/45991240003) installed the files but correctly rejected the desktop hash comparison. Build logs show Tauri patches the application executable with NSIS/MSI-specific bundle-type information. A standalone Cargo-target executable is therefore not the correct reference for installed bytes. The build now independently extracts the MSI administrative image and NSIS archive, records each exact desktop/sidecar SHA-256 in `installer-payloads.json`, verifies the sidecar against the staged Go binary, and includes the manifest in SHA256SUMS. Smoke jobs still compare exact installed bytes to the correct installer payload before launching. New native smoke results are pending.

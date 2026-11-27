@@ -4,6 +4,7 @@ import argparse
 import ctypes
 from ctypes import wintypes
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -44,7 +45,7 @@ for line in (artifacts / "SHA256SUMS").read_text(encoding="ascii").splitlines():
     checksums[name] = expected
 require(set(checksums) == {p.name for p in artifacts.iterdir() if p.is_file() and p.name != "SHA256SUMS"},
         "Unlisted or missing artifact")
-for name in ("battle-ex.exe", "battle-agent.exe", "windows-network-service.zip"):
+for name in ("battle-ex.exe", "battle-agent.exe", "windows-network-service.zip", "installer-payloads.json"):
     require(name in checksums, "Missing " + name)
 with zipfile.ZipFile(artifacts / "windows-network-service.zip") as kit:
     for name in ("battle-agent.exe", "SHA256SUMS", "install-network-service.ps1", "uninstall-network-service.ps1", "README.md"):
@@ -56,6 +57,13 @@ candidates = sorted(artifacts.glob(pattern))
 require(len(candidates) == 1, "Exactly one installer expected")
 installer = candidates[0]
 require(installer.name in checksums, "Unverified installer")
+payloads = json.loads((artifacts / "installer-payloads.json").read_text(encoding="ascii"))
+require(set(payloads) == {"msi", "nsis"}, "Missing per-format payload manifest")
+expected_payload = payloads[args.format]
+require(expected_payload["installer"] == installer.name and expected_payload["installerSha256"] == checksums[installer.name],
+        "Payload manifest does not bind this installer")
+require(expected_payload["agentSha256"] == checksums["battle-agent.exe"], "Payload sidecar hash mismatch")
+require(re.fullmatch(r"[0-9a-f]{64}", expected_payload["desktopSha256"]) is not None, "Invalid desktop payload hash")
 print("PASS: complete artifact manifest and network-service kit", flush=True)
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -108,7 +116,7 @@ with tempfile.TemporaryDirectory(prefix="battle-desktop-", dir=os.environ["RUNNE
             command = subprocess.list2cmdline([str(installer), "/S"]) + " /D=" + str(install)
             run(command, executable=str(installer))
         require(app.is_file() and sidecar.is_file(), "Installed desktop executable or network sidecar missing")
-        require(digest(app) == checksums["battle-ex.exe"], "Installed desktop executable differs from build")
+        require(digest(app) == expected_payload["desktopSha256"], "Installed desktop executable differs from build")
         require(digest(sidecar) == checksums["battle-agent.exe"], "Installed network sidecar differs from build")
         print("PASS: " + args.format.upper() + " installation and both installed executable hashes", flush=True)
 

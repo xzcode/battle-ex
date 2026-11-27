@@ -2,7 +2,7 @@ name: Windows desktop build
 on:
   push:
     branches: [master]
-    paths: ['apps/desktop/**', 'agent/**', '.github/workflows/windows-build.yml', 'scripts/build-windows-network-kit.sh', 'scripts/test-windows-installers.py', 'deploy/windows/**']
+    paths: ['apps/desktop/**', 'agent/**', '.github/workflows/windows-build.yml', 'scripts/build-windows-network-kit.sh', 'scripts/test-windows-installers.py', 'scripts/record-windows-payloads.py', 'deploy/windows/**']
   workflow_dispatch:
   workflow_call:
 permissions:
@@ -24,6 +24,9 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Native toolchain
         shell: pwsh
         run: |
@@ -73,6 +76,8 @@ jobs:
           $agentHash = (Get-FileHash -LiteralPath (Join-Path $kit.FullName 'battle-agent.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
           [IO.File]::WriteAllText((Join-Path $kit.FullName 'SHA256SUMS'), "$agentHash  battle-agent.exe`n")
           Compress-Archive -Path "$($kit.FullName)/*" -DestinationPath (Join-Path $out.FullName 'windows-network-service.zip')
+          python scripts/record-windows-payloads.py $out.FullName
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $sums = @(Get-ChildItem -Path $out.FullName -File | ForEach-Object { '{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name })
           [IO.File]::WriteAllText((Join-Path $out.FullName 'SHA256SUMS'), ($sums -join "`n") + "`n")
       - uses: actions/upload-artifact@v4
