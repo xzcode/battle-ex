@@ -1,6 +1,8 @@
 package com.battleex.platform;
 
 import com.battleex.network.NetworkAuthority;
+import com.battleex.network.RelayDirectory;
+import java.util.Optional;
 import com.battleex.competition.Competition;
 import com.battleex.room.RoomDirectory;
 import java.util.UUID;
@@ -45,8 +47,8 @@ public final class ClusterAuthority implements SmartInitializingSingleton, Dispo
         public Unavailable(){super("shared authority unavailable; retry later");}
     }
     private static final class Conflict extends RuntimeException {}
-    public record StorageMetrics(String mode,long cachedVersion,long transactionAttempts,long rowCommits,long retries,long cacheHits,long fullLoads,long deltaLoads,long changedRows,long projectedReads,long scopedRoomWrites) {}
-    public StorageMetrics storageMetrics(){return split==null?new StorageMetrics(enabled?"mongo":"memory",0,0,0,0,0,0,0,0,0,0):split.metrics();}
+    public record StorageMetrics(String mode,long cachedVersion,long transactionAttempts,long rowCommits,long retries,long cacheHits,long fullLoads,long deltaLoads,long changedRows,long projectedReads,long scopedRoomWrites,long scopedRelayWrites,long leaseReads,long scopedSnapshots,long snapshotFallbacks) {}
+    public StorageMetrics storageMetrics(){return split==null?new StorageMetrics(enabled?"mongo":"memory",0,0,0,0,0,0,0,0,0,0,0,0,0,0):split.metrics();}
     public Mono<Platform.Lobby> lobby(Platform p,String token,Scheduler worker){return splitMode&&ready?split.lobby(token):execute(()->p.lobby(token),worker);}
     public Mono<Competition.History> history(Platform p,String token,int offset,int limit,Scheduler worker){return splitMode&&ready?split.history(token,offset,limit):execute(()->p.matchHistory(token,offset,limit),worker);}
     public Mono<Competition.Leaderboard> leaderboard(Platform p,String token,String game,int offset,int limit,Scheduler worker){return splitMode&&ready?split.leaderboard(token,game,offset,limit):execute(()->p.leaderboard(token,game,offset,limit),worker);}
@@ -55,6 +57,21 @@ public final class ClusterAuthority implements SmartInitializingSingleton, Dispo
     }
     public Mono<RoomDirectory.RoomView> roomBuild(Platform p,String token,UUID id,RoomDirectory.GameBuild build,Scheduler worker){
         return splitMode&&ready?split.roomMutation(token,id,null,build,true):execute(()->p.reportGameBuild(token,id,build),worker);
+    }
+    public Mono<Platform.User> authenticatedUser(Platform p,String token,Scheduler worker){
+        return splitMode&&ready?split.authenticatedUser(token):execute(()->p.authenticate(token),worker);
+    }
+    public Mono<Optional<RelayDirectory.Limits>> relayHeartbeat(NetworkAuthority n,String secret,RelayDirectory.Heartbeat h,Scheduler worker){
+        return splitMode&&ready?split.relayHeartbeat(secret,h):execute(()->Optional.ofNullable(n.heartbeat(secret,h)),worker);
+    }
+    public Mono<Boolean> relayAuthorize(NetworkAuthority n,String secret,String instance,NetworkAuthority.Lease lease,Scheduler worker){
+        return splitMode&&ready?split.relayAuthorize(secret,instance,lease):execute(()->n.authorize(secret,instance,lease),worker);
+    }
+    public Mono<RelayDirectory.History> relayHistory(NetworkAuthority n,String token,String node,Scheduler worker){
+        return splitMode&&ready?split.relayHistory(token,node):execute(()->n.relayHistory(token,node),worker);
+    }
+    public Mono<Optional<NetworkAuthority.SignedSnapshot>> fastSnapshot(String token,String nonce,java.util.Map<String,Integer> measurements,Scheduler worker){
+        return splitMode&&ready?split.fastSnapshot(token,nonce,measurements,worker):Mono.just(Optional.empty());
     }
     public record Snapshot(Platform.StateDump platform, NetworkAuthority.StateDump network) {}
     private record Attempt<T>(long version,String oldPayload,String payload,T result) {}
@@ -91,13 +108,13 @@ public final class ClusterAuthority implements SmartInitializingSingleton, Dispo
     }
     public boolean enabled(){return enabled;}
     public boolean splitMode(){return splitMode;}
-    public Flux<Long> notifications(){return split==null?Flux.never():split.notifications();}
+    public Flux<Long> notifications(UUID user){return split==null?Flux.never():split.notifications(user);}
 
     @Override public void afterSingletonsInstantiated(){
         if(!enabled)return;
         Platform platform=platforms.getObject();NetworkAuthority network=networks.getObject();
         fingerprint=network.configurationFingerprint()+platform.competitionFingerprint();
-        if(splitMode){split=new SplitAuthority(client,database,platform,network,json,fingerprint,migrate);split.initialize();ready=true;LOG.info("Split MongoDB authority enabled (schema 2)");return;}
+        if(splitMode){split=new SplitAuthority(client,database,platform,network,json,fingerprint,migrate);split.initialize();ready=true;LOG.info("Split MongoDB authority enabled (schema 3)");return;}
         String payload;
         synchronized(platform){payload=encode(platform,network);}
         // Startup only. An existing authority must match the exact schema and

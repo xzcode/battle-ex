@@ -28,8 +28,13 @@ public final class ReactiveWork implements DisposableBean {
     public Mono<com.battleex.competition.Competition.Leaderboard> leaderboard(Platform p,String token,String game,int offset,int limit){return cluster.leaderboard(p,token,game,offset,limit,state);}
     public Mono<com.battleex.room.RoomDirectory.RoomView> roomReady(Platform p,String token,java.util.UUID id,boolean value){return cluster.roomReady(p,token,id,value,state);}
     public Mono<com.battleex.room.RoomDirectory.RoomView> roomBuild(Platform p,String token,java.util.UUID id,com.battleex.room.RoomDirectory.GameBuild build){return cluster.roomBuild(p,token,id,build,state);}
+    public Mono<java.util.Optional<com.battleex.network.RelayDirectory.Limits>> relayHeartbeat(com.battleex.network.NetworkAuthority n,String secret,com.battleex.network.RelayDirectory.Heartbeat h){return cluster.relayHeartbeat(n,secret,h,state);}
+    public Mono<Boolean> relayAuthorize(com.battleex.network.NetworkAuthority n,String secret,String instance,com.battleex.network.NetworkAuthority.Lease lease){return cluster.relayAuthorize(n,secret,instance,lease,state);}
+    public Mono<com.battleex.network.RelayDirectory.History> relayHistory(com.battleex.network.NetworkAuthority n,String token,String node){return cluster.relayHistory(n,token,node,state);}
+    public Mono<Platform.User> authenticatedUser(Platform p,String token){return cluster.authenticatedUser(p,token,state);}
+    public Mono<java.util.Optional<com.battleex.network.NetworkAuthority.SignedSnapshot>> fastSnapshot(String token,String nonce,java.util.Map<String,Integer> measurements){return cluster.fastSnapshot(token,nonce,measurements,state);}
     public boolean persistent(){return cluster.enabled();}
-    public Flux<Long> lobbyTicks(){return cluster.splitMode()?Flux.merge(Flux.just(0L),cluster.notifications(),Flux.interval(java.time.Duration.ofSeconds(5))):Flux.interval(java.time.Duration.ZERO,java.time.Duration.ofSeconds(1));}
+    public Flux<Long> lobbyTicks(java.util.UUID user){return cluster.splitMode()?Flux.merge(Flux.just(0L),cluster.notifications(user),Flux.interval(java.time.Duration.ofSeconds(5))):Flux.interval(java.time.Duration.ZERO,java.time.Duration.ofSeconds(1));}
 
     public <T> Mono<T> state(Callable<T> task) {
         return cluster.execute(task,state);

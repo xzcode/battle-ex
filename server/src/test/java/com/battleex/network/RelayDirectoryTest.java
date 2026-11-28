@@ -101,4 +101,23 @@ final class RelayDirectoryTest {
         assertEquals("10.128.0.1",NetworkAuthority.ip(8192,1));
         assertEquals("10.159.255.254",NetworkAuthority.ip(16383,254));
     }
+    @Test void stableSnapshotReuseIsConservative()throws Exception{
+        var d=directory();
+        var ok=new RelayDirectory.Live(instance,100,false,new RelayDirectory.Stats(0,0,0,0));
+        var drain=new RelayDirectory.Live(instance,100,true,new RelayDirectory.Stats(0,0,0,0));
+        Map<String,RelayDirectory.Live> live=Map.of("a",ok,"b",ok);
+        List<String> sessions=List.of("one","two");
+        var better=new RelayDirectory.Sample(100,Map.of("a",180,"b",20));
+        var probes=Map.of("one",better,"two",better);
+        assertTrue(d.mayReuse("a",95,sessions,true,100,live,probes,true,2),"cooldown");
+        assertTrue(d.mayReuse("a",60,sessions,false,100,live,probes,true,2),"routine migration does not interrupt a running match");
+        assertFalse(d.mayReuse("a",60,sessions,true,100,live,probes,true,2),"possible better path returns to capacity transaction");
+        assertFalse(d.mayReuse("a",60,sessions,true,110,live,probes,true,2),"stale heartbeat");
+        assertFalse(d.mayReuse("a",95,sessions,true,100,Map.of("a",drain,"b",ok),probes,true,2),"drain");
+        assertFalse(d.mayReuse("a",95,sessions,true,100,live,probes,true,257),"reservation exceeds node capacity");
+        var unreachable=new RelayDirectory.Sample(100,Map.of("a",-1,"b",20));
+        assertFalse(d.mayReuse("a",90,sessions,false,100,live,Map.of("one",unreachable,"two",better),true,2),"unreachable path falls back mid-match");
+        assertTrue(d.mayReuse("a",60,sessions,true,100,live,Map.of(),true,2),"missing probes are not assumed faster");
+        assertThrows(IllegalArgumentException.class,()->d.validatedSample(Map.of("a",-2),100));
+    }
 }

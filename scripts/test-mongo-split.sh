@@ -29,12 +29,14 @@ case "${1:-competition}" in
  moderation) export BATTLE_CLUSTER_TEST=true; node scripts/test-archive-moderation.mjs ;;
  migration) node scripts/test-split-migration.mjs ;;
  workers) node scripts/test-split-workers.mjs ;;
+ relays) node scripts/test-scoped-relays.mjs ;;
+ upgrade) node scripts/test-split-v2-upgrade.mjs ;;
  *) echo "Unknown split fixture" >&2; exit 2 ;;
 esac
 docker exec "$name" mongosh --quiet --norc "$BATTLE_MONGO_DB" --eval "$(cat scripts/assert-mongo-no-class.js)"
 docker exec "$name" mongosh --quiet --norc "$BATTLE_MONGO_DB" --eval '
 const m=db.authority_meta.findOne({_id:"battle-authority-v2"});
-if(!m||m.schema!==2||db.authority_state.findOne({_id:"battle-authority-v1"}).schema!==2)throw Error("split metadata missing");
+if(!m||m.schema!==3||db.authority_state.findOne({_id:"battle-authority-v1"}).schema!==2)throw Error("split metadata missing");
 if(m.payload!==undefined)throw Error("aggregate payload in split metadata");
 print("PASS: explicit split metadata, "+db.getCollectionNames().length+" collections, commit version "+m.version);
 '

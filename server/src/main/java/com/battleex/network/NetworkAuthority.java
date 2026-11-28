@@ -1,6 +1,7 @@
 package com.battleex.network;
 
 import com.battleex.platform.Platform;
+import com.battleex.room.RoomDirectory;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
@@ -170,22 +171,49 @@ public final class NetworkAuthority {
             var room=ctx.room();
             var active=activeDevices(room,now);
             RoomState state=state(room,active,now);
-            List<Peer> peers=new ArrayList<>();
-            for(Device peer:active)if(!peer.userId().equals(device.userId())){
-                Lease lease=lease(room.networkId(),state,device,peer);
-                byte[] payload=bytes(lease);
-                String tokenValue=B64.encodeToString(payload)+"."+B64.encodeToString(sign(LEASE_DOMAIN,payload));
-                peers.add(new Peer(peer.userId(),ip(state.subnet(),state.addresses().get(peer.userId())),
-                        peer.identity(),peer.wireguard(),tokenValue));
-            }
-            var selected=relays.config(state.relayNode());
-            Snapshot snapshot=new Snapshot(1,room.id(),room.networkId(),state.revision(),now,now+SNAPSHOT_SECONDS,
-                    ip(state.subnet(),state.addresses().get(device.userId())),device.identity(),device.wireguard(),
-                    selected.id(),selected.relayURL(),ice?selected.stunURL():"",ice,List.copyOf(peers),nonce,ctx.sessionDigest(),selected.region(),relays.candidates(now),room.gameId(),
-                    gameDiscovery&&"warcraft3".equals(room.gameId())?"warcraft3-directed-v1":"");
-            byte[] payload=bytes(snapshot);
-            return new SignedSnapshot(B64.encodeToString(payload),B64.encodeToString(sign(SNAP_DOMAIN,payload)));
+            return signSnapshot(room,state,device,active,nonce,now,relays.candidates(now));
         }
+    }
+    public void validateSnapshotNonce(String nonce){
+        requireEnabled();
+        if(nonce==null||!nonce.matches("[a-f0-9]{64}"))throw new IllegalArgumentException("invalid snapshot nonce");
+    }
+    public RelayDirectory.Sample validatedProbeSample(Map<String,Integer> measurements,long now){
+        return relays.validatedSample(measurements,now);
+    }
+    public Optional<SignedSnapshot> reuseStoredSnapshot(RoomDirectory.RoomView room,RoomState state,Device device,
+            List<Device> active,String nonce,long now,long generation,Map<String,RelayDirectory.Live> observed,
+            Map<String,RelayDirectory.Sample> samples){
+        validateSnapshotNonce(nonce);
+        if(!clustered||room==null||state==null||device==null||generation<=0||active.size()>65||
+                state.leaseExpiry()<=now+Math.min(20,leaseSeconds/3))return Optional.empty();
+        List<Device> ordered=active.stream().sorted(Comparator.comparing(d->d.userId().toString())).toList();
+        int demand=capacityAware?ordered.size()*(ordered.size()-1):0;
+        if(!ordered.contains(device)||state.reservedConnections()!=demand||
+                !state.fingerprint().equals(roomFingerprint(room,ordered,state.relayNode(),generation))||
+                !state.addresses().keySet().containsAll(ordered.stream().map(Device::userId).toList()))return Optional.empty();
+        if(!relays.mayReuse(state.relayNode(),state.changedAt(),ordered.stream().map(Device::session).toList(),
+                room.state()==RoomDirectory.State.WAITING,now,observed,samples,capacityAware,demand))return Optional.empty();
+        return Optional.of(signSnapshot(room,state,device,ordered,nonce,now,relays.storedCandidates(observed,now)));
+    }
+    private SignedSnapshot signSnapshot(RoomDirectory.RoomView room,RoomState state,Device device,List<Device> active,
+            String nonce,long now,List<RelayDirectory.Candidate> candidates){
+        List<Peer> peers=new ArrayList<>();
+        for(Device peer:active)if(!peer.userId().equals(device.userId())){
+            Lease lease=lease(room.networkId(),state,device,peer);
+            byte[] payload=bytes(lease);
+            String tokenValue=B64.encodeToString(payload)+"."+B64.encodeToString(sign(LEASE_DOMAIN,payload));
+            peers.add(new Peer(peer.userId(),ip(state.subnet(),state.addresses().get(peer.userId())),
+                    peer.identity(),peer.wireguard(),tokenValue));
+        }
+        var selected=relays.config(state.relayNode());
+        Snapshot snapshot=new Snapshot(1,room.id(),room.networkId(),state.revision(),now,
+                Math.min(now+SNAPSHOT_SECONDS,state.leaseExpiry()),
+                ip(state.subnet(),state.addresses().get(device.userId())),device.identity(),device.wireguard(),
+                selected.id(),selected.relayURL(),ice?selected.stunURL():"",ice,List.copyOf(peers),nonce,device.session(),selected.region(),candidates,room.gameId(),
+                gameDiscovery&&"warcraft3".equals(room.gameId())?"warcraft3-directed-v1":"");
+        byte[] payload=bytes(snapshot);
+        return new SignedSnapshot(B64.encodeToString(payload),B64.encodeToString(sign(SNAP_DOMAIN,payload)));
     }
     public void disconnect(String token){
         synchronized(platform){
@@ -215,6 +243,38 @@ public final class NetworkAuthority {
             return a!=null&&b!=null&&!a.userId().equals(b.userId())&&lease(network,state,a,b).equals(requested);
         }
     }
+    // Split-mode configuration is immutable until an offline policy change.
+    // These functions never inspect mutable in-process runtime maps.
+    public boolean validScopedHeartbeat(String secret,RelayDirectory.Heartbeat heartbeat){
+        return enabled()&&clustered&&relays.validHeartbeat(secret,heartbeat);
+    }
+    public RelayDirectory.HeartbeatUpdate scopedHeartbeat(String secret,RelayDirectory.Heartbeat heartbeat,long now,
+            RelayDirectory.Live previous,long generation,RelayDirectory.Minute old){
+        if(!validScopedHeartbeat(secret,heartbeat))return null;
+        return relays.scopedHeartbeat(secret,heartbeat,now,previous,generation,old);
+    }
+    public boolean validStoredLease(String secret,Lease requested,long now){
+        return enabled()&&clustered&&requested!=null&&requested.expires()>now&&
+                relays.authenticated(requested.node(),secret);
+    }
+    public boolean authorizeStored(String secret,String instance,Lease requested,RoomDirectory.RoomView room,
+            RoomState state,List<Device> active,long generation,RelayDirectory.Live live,long now){
+        if(!validStoredLease(secret,requested,now)||room==null||state==null||active.size()<2||
+                !room.networkId().toString().equals(requested.network())||!requested.node().equals(state.relayNode())||
+                state.leaseExpiry()<=now||generation<=0||!relays.storedNodeAllowed(requested.node(),instance,live,now))return false;
+        // Accept only a grant already committed by snapshot issuance. No
+        // authorization request can select a new node, allocate IP or extend a lease.
+        var ordered=active.stream().sorted(Comparator.comparing(d->d.userId().toString())).toList();
+        if(!state.fingerprint().equals(roomFingerprint(room,ordered,requested.node(),generation)))return false;
+        Device a=null,b=null;
+        for(Device d:ordered){if(d.identity().equals(requested.a()))a=d;if(d.identity().equals(requested.b()))b=d;}
+        return a!=null&&b!=null&&!a.userId().equals(b.userId())&&lease(room.networkId(),state,a,b).equals(requested);
+    }
+    public int historyRetention(String node){
+        if(!clustered||node==null||!relays.knownNode(node))throw new IllegalArgumentException("unknown relay node");
+        return retentionMinutes;
+    }
+    public long deviceHeartbeatSeconds(){return HEARTBEAT_SECONDS;}
     public RelayDirectory.Limits heartbeat(String secret,RelayDirectory.Heartbeat heartbeat){
         synchronized(platform){return enabled()?relays.heartbeat(secret,heartbeat,Instant.now().getEpochSecond()):null;}
     }
@@ -244,7 +304,7 @@ public final class NetworkAuthority {
                 room.state()==com.battleex.room.RoomDirectory.State.WAITING,now,reservations(room.networkId(),now),demand,old==null||old.leaseExpiry()<=now?0:old.reservedConnections(),capacityAware);
         if(selected==null)throw new NoRelay();
         long changedAt=old==null||!selected.equals(old.relayNode())?now:old.changedAt();
-        String fingerprint=selected+":"+relays.generation(selected)+":"+room.membershipRevision()+":"+String.join(",",active.stream().map(d->d.userId()+":"+d.session()+":"+d.identity()+":"+d.wireguard()).toList());
+        String fingerprint=roomFingerprint(room,active,selected,relays.generation(selected));
         if(old!=null&&old.fingerprint().equals(fingerprint)&&old.reservedConnections()==demand&&old.leaseExpiry()>now+Math.min(20,leaseSeconds/3))return old;
         int subnet=old==null?allocate(now):old.subnet();
         var addresses=new HashMap<UUID,Integer>();
@@ -260,6 +320,10 @@ public final class NetworkAuthority {
         var next=new RoomState(subnet,fingerprint,revision,now+leaseSeconds,Map.copyOf(addresses),selected,changedAt,demand);
         networks.put(room.networkId(),next);
         return next;
+    }
+    private static String roomFingerprint(RoomDirectory.RoomView room,List<Device> active,String node,long generation){
+        return node+":"+generation+":"+room.membershipRevision()+":"+String.join(",",active.stream()
+                .map(d->d.userId()+":"+d.session()+":"+d.identity()+":"+d.wireguard()).toList());
     }
     private Map<String,Integer> reservations(UUID except,long now){
         Map<String,Integer> result=new HashMap<>();

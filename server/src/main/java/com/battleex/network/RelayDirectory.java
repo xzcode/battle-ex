@@ -24,6 +24,8 @@ public final class RelayDirectory {
     record Node(Config config, String secret, boolean legacy) {}
     public record Live(String instance, long seen, boolean draining, Stats stats) {}
     public record Sample(long seen, Map<String,Integer> measurements) {}
+    /** Pure calculation for one relay's independent replica-set transaction. */
+    public record HeartbeatUpdate(Live live,long generation,Minute minute,Limits limits) {}
     private final Map<String,Node> nodes = new TreeMap<>();
     private final Map<String,Live> live = new HashMap<>();
     private final Map<String,Sample> samples = new HashMap<>();
@@ -149,10 +151,32 @@ public final class RelayDirectory {
         Node n=id==null?null:nodes.get(id);
         return n!=null&&secret!=null&&MessageDigest.isEqual(n.secret().getBytes(StandardCharsets.US_ASCII),secret.getBytes(StandardCharsets.US_ASCII));
     }
-    Limits heartbeat(String secret,Heartbeat h,long now){
+    boolean validHeartbeat(String secret,Heartbeat h){
         if(!dynamic||h==null||!authenticated(h.node(),secret)||h.instance()==null||
                 !h.instance().matches("[a-f0-9]{32}")||h.stats()==null||h.stats().connections()<0||
-                h.stats().connections()>256||h.stats().ingress_bytes()<0||h.stats().egress_bytes()<0||h.stats().dropped_packets()<0)return null;
+                h.stats().connections()>256||h.stats().ingress_bytes()<0||h.stats().egress_bytes()<0||h.stats().dropped_packets()<0)return false;
+        return true;
+    }
+    HeartbeatUpdate scopedHeartbeat(String secret,Heartbeat h,long now,Live previous,long generation,Minute old){
+        if(!validHeartbeat(secret,h)||generation<=0)return null;
+        if(instanceFence&&previous!=null&&!previous.instance().equals(h.instance())){
+            if(previous.seen()+TTL>now)return null;
+            // Generation is scoped to this configured node. It is only
+            // compared with the same node ID in signed allocation fingerprints.
+            generation=Math.addExact(generation,1);
+        }
+        Config c=nodes.get(h.node()).config();
+        return new HeartbeatUpdate(new Live(h.instance(),now,h.draining(),h.stats()),generation,
+                minute(h,previous,old,now),new Limits(c.maxConnections(),c.bytesPerSecond()));
+    }
+    boolean storedNodeAllowed(String node,String instance,Live observed,long now){
+        Node n=nodes.get(node);
+        return n!=null&&(n.legacy()||observed!=null&&observed.seen()+TTL>now&&!observed.draining()&&
+                (!instanceFence||observed.instance().equals(instance)));
+    }
+    boolean knownNode(String id){return nodes.containsKey(id);}
+    Limits heartbeat(String secret,Heartbeat h,long now){
+        if(!validHeartbeat(secret,h))return null;
         Live previous=live.get(h.node());
         if(instanceFence&&previous!=null&&!previous.instance().equals(h.instance())){
             if(previous.seen()+TTL>now)return null;
@@ -166,6 +190,12 @@ public final class RelayDirectory {
         return new Limits(c.maxConnections(),c.bytesPerSecond());
     }
     private void recordHistory(Heartbeat h,Live previous,long now){
+        var series=history.computeIfAbsent(h.node(),ignored->new TreeMap<>());
+        long epoch=Math.floorDiv(now,60)*60;
+        series.put(epoch,minute(h,previous,series.get(epoch),now));
+        pruneHistory(now);
+    }
+    private static Minute minute(Heartbeat h,Live previous,Minute old,long now){
         long minute=Math.floorDiv(now,60)*60;
         Stats stats=h.stats();
         boolean continuous=previous!=null&&previous.instance().equals(h.instance())&&previous.seen()+TTL>now
@@ -175,12 +205,10 @@ public final class RelayDirectory {
         long in=continuous?stats.ingress_bytes()-previous.stats().ingress_bytes():0;
         long out=continuous?stats.egress_bytes()-previous.stats().egress_bytes():0;
         long dropped=continuous?stats.dropped_packets()-previous.stats().dropped_packets():0;
-        var series=history.computeIfAbsent(h.node(),ignored->new TreeMap<>());
-        var old=series.getOrDefault(minute,new Minute(minute,0,0,0,0,0,0));
-        series.put(minute,new Minute(minute,Math.max(old.peakConnections(),stats.connections()),
+        if(old==null)old=new Minute(minute,0,0,0,0,0,0);
+        return new Minute(minute,Math.max(old.peakConnections(),stats.connections()),
                 saturatedAdd(old.ingressBytes(),in),saturatedAdd(old.egressBytes(),out),saturatedAdd(old.droppedPackets(),dropped),
-                old.samples()+1,old.discontinuities()+(continuous?0:1)));
-        pruneHistory(now);
+                old.samples()+1,old.discontinuities()+(continuous?0:1));
     }
     private static long saturatedAdd(long a,long b){return Long.MAX_VALUE-a<b?Long.MAX_VALUE:a+b;}
     private void pruneHistory(long now){
@@ -225,15 +253,61 @@ public final class RelayDirectory {
                     n.config().maxConnections(),n.config().bytesPerSecond(),reserved.getOrDefault(n.config().id(),0));
         }).toList();
     }
-    void report(String session,Map<String,Integer> metrics,long now){
-        if(!dynamic||metrics==null||metrics.isEmpty())return;
+    Sample validatedSample(Map<String,Integer> metrics,long now){
+        if(!dynamic||metrics==null||metrics.isEmpty())return null;
         Map<String,Integer> copy=new HashMap<>();
         for(var entry:metrics.entrySet()){
             if(entry.getKey()==null||entry.getValue()==null||entry.getValue() < -1||entry.getValue()>5000)
                 throw new IllegalArgumentException("invalid relay probe measurement");
             if(nodes.containsKey(entry.getKey()))copy.put(entry.getKey(),entry.getValue());
         }
-        samples.put(session,new Sample(now,Map.copyOf(copy)));
+        return new Sample(now,Map.copyOf(copy));
+    }
+    void report(String session,Map<String,Integer> metrics,long now){
+        Sample sample=validatedSample(metrics,now);
+        if(sample!=null)samples.put(session,sample);
+    }
+    private static boolean healthyStored(Node n,Live observed,long now){
+        return n.legacy()||observed!=null&&observed.seen()+TTL>now&&!observed.draining();
+    }
+    List<Candidate> storedCandidates(Map<String,Live> observed,long now){
+        if(!dynamic)return List.of();
+        return nodes.values().stream().filter(n->healthyStored(n,observed.get(n.config().id()),now))
+                .map(n->new Candidate(n.config().id(),n.config().region(),n.config().relayURL())).toList();
+    }
+    // A conservative reuse guard. A new allocation or a possible change of
+    // path is deliberately routed through the original capacity transaction.
+    // Existing non-expired reservation is unchanged, and cannot be consumed
+    // by a different room's serialized allocation while it remains valid.
+    boolean mayReuse(String selected,long changedAt,List<String> sessions,boolean waiting,long now,
+            Map<String,Live> observed,Map<String,Sample> probes,boolean capacityAware,int demand){
+        Node node=nodes.get(selected);
+        Live l=observed.get(selected);
+        if(node==null||!healthyStored(node,l,now))return false;
+        if(capacityAware&&(demand>node.config().maxConnections()||
+                (l!=null&&l.stats().connections()>node.config().maxConnections())))return false;
+        if(!dynamic||sessions.isEmpty())return true;
+        Double before=storedScore(node,sessions,now,observed,probes);
+        if(before==null)return true;
+        for(Node alternative:nodes.values()){
+            if(alternative==node||!healthyStored(alternative,observed.get(alternative.config().id()),now))continue;
+            Double after=storedScore(alternative,sessions,now,observed,probes);
+            if(after==null)continue;
+            if(before>=5000&&after<5000&&now-changedAt>=5)return false;
+            if(waiting&&now-changedAt>=SWITCH_COOLDOWN&&before-after>=Math.max(25,before*0.20))return false;
+        }
+        return true;
+    }
+    private static Double storedScore(Node n,List<String> sessions,long now,Map<String,Live> observed,Map<String,Sample> probes){
+        double total=0,worst=0;
+        for(String session:sessions){
+            Sample sample=probes.get(session);
+            Integer r=sample==null||sample.seen()+PROBE_TTL<=now?null:sample.measurements().get(n.config().id());
+            if(r==null)return null;
+            double v=r<0?5000:r;total+=v;worst=Math.max(worst,v);
+        }
+        Live l=observed.get(n.config().id());
+        return worst+total/sessions.size()+50.0*(l==null?0:l.stats().connections())/n.config().maxConnections();
     }
     void prune(long now){samples.values().removeIf(s->s.seen()+PROBE_TTL<=now);pruneHistory(now);}
     private Double score(Node n,List<String> sessions,long now){

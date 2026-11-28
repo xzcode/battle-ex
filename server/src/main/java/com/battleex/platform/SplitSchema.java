@@ -87,6 +87,13 @@ final class SplitSchema {
     private static void add(Map<Key,Document> rows,String collection,String id,Document d){
         if(rows.put(new Key(collection,id),d)!=null)throw new IllegalArgumentException("duplicate entity "+collection);
     }
+    Document entityRow(String id,Object value){
+        JsonNode node=json.valueToTree(value);checkKeys(node);
+        return new Document("_id",id).append("data",bson(node));
+    }
+    Document metricRow(String node,com.battleex.network.RelayDirectory.Minute value){
+        return entityRow(node+":"+value.minute(),value).append("node",node).append("minute",value.minute());
+    }
     Document roomRow(com.battleex.room.RoomDirectory.StoredRoom room){
         JsonNode node=json.valueToTree(room);checkKeys(node);
         return new Document("_id",room.view().id().toString()).append("data",bson(node));

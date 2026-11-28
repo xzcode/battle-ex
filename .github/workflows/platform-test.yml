@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        fixture: [competition, migration, workers, community, moderation]
+        fixture: [competition, migration, workers, community, moderation, relays, upgrade]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,9 +30,20 @@ jobs:
           node-version: "22"
       - name: Build service
         run: mvn -B -ntp -f server/pom.xml test package
+      - name: Checkout pinned schema-2 baseline
+        if: matrix.fixture == 'upgrade'
+        uses: actions/checkout@v4
+        with:
+          ref: f56eb56077d57dc906f81f47cac651a8da266196
+          path: .ci-v2
+          persist-credentials: false
+      - name: Build the previous schema-2 binary
+        if: matrix.fixture == 'upgrade'
+        run: mvn -B -ntp -f .ci-v2/server/pom.xml -DskipTests package
       - name: Replica-set transaction acceptance
         env:
           FIXTURE: ${{ matrix.fixture }}
+          BATTLE_V2_JAR: ${{ github.workspace }}/.ci-v2/server/target/battle-ex-server-0.1.0-SNAPSHOT.jar
         run: bash scripts/test-mongo-split.sh "$FIXTURE"
   replica-failover:
     runs-on: ubuntu-24.04

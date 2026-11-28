@@ -1,5 +1,7 @@
 # M10 distributed authority — development baseline
 
+The later [schema-3 scoped network follow-up](M10_SCOPED_NETWORK.md) supersedes the runtime schema-2 details below and provides the mandatory offline upgrade procedure.
+
 ## Modes and migration
 
 The same Java 21 WebFlux JAR supports memory (single-process development),

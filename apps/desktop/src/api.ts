@@ -67,4 +67,4 @@ export type OperationOverview={signedIn:number;rooms:number;runningMatches:numbe
 export type OperatorSession={user:User;expiresAt:number;roomId:string|null;queued:boolean}
 export type OperatorRoom={id:string;name:string;gameId:string;visibility:string;state:string;host:string;members:number;capacity:number}
 
-export type StorageMetrics={mode:string;cachedVersion:number;transactionAttempts:number;rowCommits:number;retries:number;cacheHits:number;fullLoads:number;deltaLoads:number;changedRows:number;projectedReads:number;scopedRoomWrites?:number}
+export type StorageMetrics={mode:string;cachedVersion:number;transactionAttempts:number;rowCommits:number;retries:number;cacheHits:number;fullLoads:number;deltaLoads:number;changedRows:number;projectedReads:number;scopedRoomWrites?:number;scopedRelayWrites?:number;leaseReads?:number;scopedSnapshots?:number;snapshotFallbacks?:number}

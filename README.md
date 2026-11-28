@@ -21,6 +21,8 @@ The [MongoDB storage contract](docs/M10_STORAGE_CONTRACT.md) prohibits `_class` 
 
 The [M10 distributed authority](docs/M10_DISTRIBUTED_AUTHORITY.md) introduces optional replica-set entity storage, explicit offline migration, indexed reads, scoped room-local writes, change-stream lobby notifications, partitioned workers and opt-in expanded pool/relay reservations. Cross-entity transactions still use a small shared commit fence.
 
+The [M10 scoped network follow-up](docs/M10_SCOPED_NETWORK.md) adds schema-3 offline upgrade, independent relay heartbeat/authorization/history, stable signed-snapshot refresh and targeted lobby notifications. Cross-entity decisions remain globally fenced.
+
 ## Product scope
 
 Windows-first desktop client (Tauri 2 + Vue 3 + TypeScript), game lobby, private/public rooms, player readiness, invite, local game launch, network diagnostics, regional relay selection and configurable LAN discovery. Initial compatibility targets: Warcraft III, Red Alert 2 and CS 1.6; exact editions and versions require real-game verification. Users supply legally acquired games; no bundled game binaries, keys, assets or unauthorized bypass.

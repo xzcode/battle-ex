@@ -61,9 +61,9 @@ public final class LobbySocket implements WebSocketHandler {
                 .switchOnFirst((first, inbound) -> {
                     if (first.isOnError()) return inbound.then();
                     if (!first.hasValue()) return Mono.<Void>empty();
-                    return work.state(() -> authenticate(first.get()))
-                            .flatMap(token -> {
-                                Flux<WebSocketMessage> outbound = work.lobbyTicks()
+                    return Mono.fromCallable(()->authenticate(first.get()))
+                            .flatMap(token -> work.authenticatedUser(platform,token).flatMap(user->{
+                                Flux<WebSocketMessage> outbound = work.lobbyTicks(user.id())
                                         .onBackpressureLatest()
                                         .concatMap(tick -> work.lobby(platform,token), 1)
                                         .distinctUntilChanged()
@@ -76,7 +76,7 @@ public final class LobbySocket implements WebSocketHandler {
                                 Mono<Void> inboundDone = inbound.skip(1).next()
                                         .flatMap(ignored -> Mono.<Void>error(new InvalidFrame()));
                                 return Mono.firstWithSignal(session.send(outbound), inboundDone);
-                            });
+                            }));
                 })
                 .then()
                 .onErrorResume(Platform.Unauthorized.class, e -> session.close(CloseStatus.POLICY_VIOLATION))
@@ -91,7 +91,6 @@ public final class LobbySocket implements WebSocketHandler {
             if (node == null || !"authenticate".equals(node.path("type").asText()) ||
                     !node.path("token").isTextual()) throw new InvalidFrame();
             String token = node.get("token").asText();
-            platform.authenticate(token);
             return token;
         } catch (Platform.Unauthorized e) {
             throw e;

@@ -1,6 +1,7 @@
 package com.battleex.platform;
 
 import com.battleex.network.NetworkAuthority;
+import com.battleex.network.RelayDirectory;
 import com.battleex.competition.Competition;
 import com.battleex.room.RoomDirectory;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -38,7 +39,9 @@ import static com.mongodb.client.model.Filters.*;
 final class SplitAuthority implements AutoCloseable {
     private static final String ID="battle-authority-v2",LEGACY="battle-authority-v1";
     private static final String META="authority_meta",JOURNAL="outbox_events";
-    private static final int SCHEMA=2,MAX_DELTA=4096;
+    private static final int SCHEMA=3,MAX_DELTA=4096;
+    private static final Set<String> INDEPENDENT=Set.of("rooms","relay_nodes","relay_generations","network_devices","relay_samples");
+    private static final String METRICS="relay_metrics";
     private static final Duration TIMEOUT=Duration.ofSeconds(12);
     private static final TransactionOptions TX=TransactionOptions.builder()
         .readConcern(ReadConcern.SNAPSHOT).writeConcern(WriteConcern.MAJORITY).readPreference(ReadPreference.primary()).build();
@@ -55,14 +58,15 @@ final class SplitAuthority implements AutoCloseable {
     private final String fingerprint;
     private final boolean migrate;
     private final AtomicReference<Cached> cache=new AtomicReference<>();
-    private final Sinks.Many<Long> notifications=Sinks.many().multicast().directBestEffort();
+    private record LobbyNotice(long revision,Set<UUID> recipients){}
+    private final Sinks.Many<LobbyNotice> notifications=Sinks.many().multicast().directBestEffort();
     private volatile Disposable watcher,roomWatcher;
     private final LongAdder attempts=new LongAdder(),commits=new LongAdder(),retriesCount=new LongAdder(),
-            cacheHits=new LongAdder(),fullLoads=new LongAdder(),deltaLoads=new LongAdder(),changedRows=new LongAdder(),projectedReads=new LongAdder(),scopedRoomWrites=new LongAdder();
+            cacheHits=new LongAdder(),fullLoads=new LongAdder(),deltaLoads=new LongAdder(),changedRows=new LongAdder(),projectedReads=new LongAdder(),scopedRoomWrites=new LongAdder(),scopedRelayWrites=new LongAdder(),leaseReads=new LongAdder(),scopedSnapshots=new LongAdder(),snapshotFallbacks=new LongAdder();
     ClusterAuthority.StorageMetrics metrics(){
         Cached c=cache.get();
         return new ClusterAuthority.StorageMetrics("mongo-split",c==null?0:c.version(),attempts.sum(),commits.sum(),
-                retriesCount.sum(),cacheHits.sum(),fullLoads.sum(),deltaLoads.sum(),changedRows.sum(),projectedReads.sum(),scopedRoomWrites.sum());
+                retriesCount.sum(),cacheHits.sum(),fullLoads.sum(),deltaLoads.sum(),changedRows.sum(),projectedReads.sum(),scopedRoomWrites.sum(),scopedRelayWrites.sum(),leaseReads.sum(),scopedSnapshots.sum(),snapshotFallbacks.sum());
     }
     SplitAuthority(MongoClient client,MongoDatabase db,Platform platform,NetworkAuthority network,ObjectMapper json,String fingerprint,boolean migrate){
         this.client=client;this.db=db.withReadPreference(ReadPreference.primary()).withWriteConcern(WriteConcern.MAJORITY);this.platform=platform;this.network=network;this.json=json;
@@ -128,28 +132,60 @@ final class SplitAuthority implements AutoCloseable {
         done(col(JOURNAL).createIndex(Indexes.ascending("createdAt"),new IndexOptions().expireAfter(24L,TimeUnit.HOURS))).block(Duration.ofSeconds(30));
         Cached initial=retries(transaction(s->Mono.from(col(META).find(s,eq("_id",ID)).first())
             .map(Optional::of).defaultIfEmpty(Optional.empty()).flatMap(found->{
-                if(found.isPresent())return load(s,found.get());
+                if(found.isPresent())return upgradeOrLoad(s,found.get());
                 return bootstrap(s);
             })).onErrorResume(MongoWriteException.class,e->e.getError().getCategory()==ErrorCategory.DUPLICATE_KEY?Mono.error(new Conflict()):Mono.error(e)))
                 .block(Duration.ofSeconds(120));
         if(initial==null)throw new IllegalStateException("split authority missing");
-        synchronized(platform){restore(initial.state());}
-        remember(initial);
+        var activeRows=new TreeMap<>(initial.state().rows());activeRows.keySet().removeIf(k->METRICS.equals(k.collection()));
+        Cached active=new Cached(initial.version(),new SplitSchema.State(initial.state().revision(),initial.state().nextGeneration(),
+                initial.state().lastHistoryPrune(),Collections.unmodifiableMap(activeRows)));
+        synchronized(platform){restore(active.state());}
+        remember(active);
         // Change stream is a notification, not the source of authorization.
         // On disconnect, reconnect; WebSockets also resync on bounded timer.
         watcher=Flux.defer(()->Flux.from(col(META).watch().fullDocument(com.mongodb.client.model.changestream.FullDocument.UPDATE_LOOKUP)))
             .handle((change,sink)->{Document d=change.getFullDocument();if(d!=null)sink.next(d);}).cast(Document.class)
             .filter(d->ID.equals(d.getString("_id"))).map(d->number(d,"revision")).distinctUntilChanged()
             .retryWhen(Retry.backoff(Long.MAX_VALUE,Duration.ofMillis(250)).maxBackoff(Duration.ofSeconds(5)))
-            .subscribe(v->notifications.tryEmitNext(v),e->{});
+            .subscribe(v->notifications.tryEmitNext(new LobbyNotice(v,Set.of())),e->{});
         // Room-local updates do not advance the global commit fence. A
         // separate change stream plus periodic resync wakes lobby viewers.
-        roomWatcher=Flux.defer(()->Flux.from(col("rooms").watch()))
+        roomWatcher=Flux.defer(()->Flux.from(col("rooms").watch().fullDocument(com.mongodb.client.model.changestream.FullDocument.UPDATE_LOOKUP)))
             .retryWhen(Retry.backoff(Long.MAX_VALUE,Duration.ofMillis(250)).maxBackoff(Duration.ofSeconds(5)))
-            .subscribe(v->notifications.tryEmitNext(-1L),e->{});
+            .subscribe(change->{
+                var row=change.getFullDocument();
+                if(row!=null){
+                    var room=value(row,RoomDirectory.StoredRoom.class).view();
+                    notifyRoom(room);
+                }
+            },e->{});
 
     }
-    Flux<Long> notifications(){return notifications.asFlux();}
+    private Mono<Cached> upgradeOrLoad(ClientSession session,Document m){
+        if(Objects.equals(m.getInteger("schema"),2)&&fingerprint.equals(m.getString("configuration"))){
+            if(!migrate)return Mono.error(new IllegalStateException("schema 2 authority present; explicit offline migration required"));
+            long before=number(m,"version");
+            Document upgraded=new Document(m).append("schema",SCHEMA).append("version",before+1);
+            // The prior binary's compare-and-set requires schema 2. It
+            // cannot commit after this transaction seals the protocol.
+            return full(session,upgraded).flatMap(c->{
+                // Validate the old stored rows before advancing the fence.
+                synchronized(platform){restore(c.state());}
+                return Mono.from(col(META).replaceOne(session,and(eq("_id",ID),eq("schema",2),eq("version",before),
+                        eq("configuration",fingerprint)),upgraded))
+                        .flatMap(r->r.getMatchedCount()==1?Mono.just(c):Mono.error(new Conflict()));
+            });
+        }
+        return load(session,m);
+    }
+    private void notifyRoom(RoomDirectory.RoomView room){
+        var members=new HashSet<UUID>();room.members().forEach(m->members.add(m.userId()));
+        if(!members.isEmpty())notifications.tryEmitNext(new LobbyNotice(-1L,Set.copyOf(members)));
+    }
+    Flux<Long> notifications(UUID user){
+        return notifications.asFlux().filter(n->n.recipients().isEmpty()||n.recipients().contains(user)).map(LobbyNotice::revision);
+    }
     private static long number(Document d,String name){Object v=d.get(name);if(!(v instanceof Number n))throw new IllegalStateException("missing numeric "+name);return n.longValue();}
     private Document meta(Cached c){return new Document("_id",ID).append("schema",SCHEMA).append("configuration",fingerprint)
         .append("version",c.version()).append("revision",c.state().revision()).append("relayNextGeneration",c.state().nextGeneration())
@@ -203,7 +239,7 @@ final class SplitAuthority implements AutoCloseable {
     }
     private Mono<Cached> full(ClientSession session,Document m){
         fullLoads.increment();
-        return Flux.fromIterable(SplitSchema.COLLECTIONS).concatMap(name->Flux.from(col(name).find(session))
+        return Flux.fromIterable(SplitSchema.COLLECTIONS).filter(name->!METRICS.equals(name)).concatMap(name->Flux.from(col(name).find(session))
             .map(d->Map.entry(new SplitSchema.Key(name,d.getString("_id")),d)))
             .collectMap(Map.Entry::getKey,Map.Entry::getValue,TreeMap::new)
             .map(rows->new Cached(number(m,"version"),state(m,rows)));
@@ -211,8 +247,9 @@ final class SplitAuthority implements AutoCloseable {
     private Mono<Cached> load(ClientSession session,Document m){
         return loadJournal(session,m).flatMap(c->{
             Map<SplitSchema.Key,Document> rows=new TreeMap<>(c.state().rows());
-            rows.keySet().removeIf(k->k.collection().equals("rooms"));
-            return Flux.from(col("rooms").find(session)).doOnNext(d->rows.put(new SplitSchema.Key("rooms",d.getString("_id")),d))
+            rows.keySet().removeIf(k->INDEPENDENT.contains(k.collection())||METRICS.equals(k.collection()));
+            return Flux.fromIterable(INDEPENDENT).concatMap(name->Flux.from(col(name).find(session))
+                    .doOnNext(d->rows.put(new SplitSchema.Key(name,d.getString("_id")),d)))
                     .then(Mono.fromSupplier(()->new Cached(c.version(),state(m,rows))));
         });
     }
@@ -229,7 +266,7 @@ final class SplitAuthority implements AutoCloseable {
                     for(Document change:e.getList("changes",Document.class)){
                         String name=change.getString("collection");
                         if(!SplitSchema.COLLECTIONS.contains(name))throw new IllegalStateException("invalid change journal collection");
-                        changes.computeIfAbsent(name,x->new TreeSet<>()).add(change.getString("id"));
+                        if(!METRICS.equals(name)&&!INDEPENDENT.contains(name))changes.computeIfAbsent(name,x->new TreeSet<>()).add(change.getString("id"));
                     }
                 }
                 deltaLoads.increment();Map<SplitSchema.Key,Document> rows=new TreeMap<>(previous.state().rows());
@@ -252,7 +289,8 @@ final class SplitAuthority implements AutoCloseable {
             SplitSchema.State after=schema.encode(current());
             Map<SplitSchema.Key,Document> upserts=new TreeMap<>();
             Set<SplitSchema.Key> deletes=new TreeSet<>(canonical.rows().keySet());deletes.removeAll(after.rows().keySet());
-            after.rows().forEach((key,value)->{if(!Objects.equals(canonical.rows().get(key),value))upserts.put(key,value);});
+            deletes.removeIf(k->METRICS.equals(k.collection()));
+            after.rows().forEach((key,value)->{if(!METRICS.equals(key.collection())&&!Objects.equals(canonical.rows().get(key),value))upserts.put(key,value);});
             boolean changed=!upserts.isEmpty()||!deletes.isEmpty()||after.revision()!=canonical.revision()||
                     after.nextGeneration()!=canonical.nextGeneration()||after.lastHistoryPrune()!=canonical.lastHistoryPrune();
             return new Decision<>(new Cached(changed?before.version()+1:before.version(),changed?after:before.state()),result,upserts,deletes);
@@ -330,10 +368,130 @@ final class SplitAuthority implements AutoCloseable {
                     return Mono.from(col("rooms").replaceOne(s,and(eq("_id",id.toString()),eq("data.view.revision",stored.view().revision())),replacement))
                             .flatMap(result->result.getMatchedCount()==1?Mono.just(new RoomDecision(view,true)):Mono.error(new Conflict()));
                 }))))
-            .timeout(TIMEOUT).map(result->{if(result.changed()){scopedRoomWrites.increment();notifications.tryEmitNext(-1L);}return result.view();})
+            .timeout(TIMEOUT).map(result->{if(result.changed()){scopedRoomWrites.increment();notifyRoom(result.view());}return result.view();})
             .onErrorMap(MongoException.class,e->new ClusterAuthority.Unavailable())
             .onErrorMap(java.util.concurrent.TimeoutException.class,e->new ClusterAuthority.Unavailable());
     }
+    private Mono<Document> metadata(ClientSession s){
+        return Mono.from(col(META).find(s,eq("_id",ID)).first()).switchIfEmpty(Mono.error(new ClusterAuthority.Unavailable()))
+                .map(m->{validate(m);return m;});
+    }
+    private <T> Mono<Optional<T>> optionalValue(ClientSession s,String collection,String id,Class<T> type){
+        return Mono.from(col(collection).find(s,eq("_id",id)).first()).map(d->Optional.of(value(d,type))).defaultIfEmpty(Optional.empty());
+    }
+    private <T> Mono<T> scoped(Mono<T> task){
+        return retries(task).timeout(TIMEOUT).onErrorMap(MongoException.class,e->new ClusterAuthority.Unavailable())
+                .onErrorMap(java.util.concurrent.TimeoutException.class,e->new ClusterAuthority.Unavailable());
+    }
+    Mono<Optional<RelayDirectory.Limits>> relayHeartbeat(String secret,RelayDirectory.Heartbeat heartbeat){
+        if(!network.validScopedHeartbeat(secret,heartbeat))return Mono.just(Optional.empty());
+        String node=heartbeat.node();
+        return scoped(transaction(session->metadata(session).flatMap(m->{
+            long now=Instant.now().getEpochSecond(),minute=Math.floorDiv(now,60)*60;
+            return optionalValue(session,"relay_nodes",node,RelayDirectory.Live.class).flatMap(previous->
+                optionalValue(session,"relay_generations",node,Long.class).flatMap(generation->
+                    optionalValue(session,METRICS,node+":"+minute,RelayDirectory.Minute.class).flatMap(old->{
+                        var update=network.scopedHeartbeat(secret,heartbeat,now,previous.orElse(null),generation.orElse(0L),old.orElse(null));
+                        if(update==null)return Mono.just(Optional.<RelayDirectory.Limits>empty());
+                        long oldest=minute-(network.historyRetention(node)-1L)*60;
+                        Mono<Void> write=done(col("relay_nodes").replaceOne(session,eq("_id",node),schema.entityRow(node,update.live()),new ReplaceOptions().upsert(true)))
+                            .then(done(col(METRICS).replaceOne(session,eq("_id",node+":"+minute),schema.metricRow(node,update.minute()),new ReplaceOptions().upsert(true))));
+                        if(update.generation()!=generation.orElse(0L))write=write.then(done(col("relay_generations").replaceOne(session,eq("_id",node),schema.entityRow(node,update.generation()))));
+                        // Bounded retention deletion is node-local. Other
+                        // nodes' telemetry cannot contend on this update.
+                        if(previous.isEmpty()||Math.floorDiv(previous.get().seen(),60)*60!=minute)
+                            write=write.then(done(col(METRICS).deleteMany(session,and(eq("node",node),lt("minute",oldest)))));
+                        return write.thenReturn(Optional.of(update.limits()));
+                    })));
+        }))).doOnNext(result->{if(result.isPresent())scopedRelayWrites.increment();});
+    }
+    Mono<RelayDirectory.History> relayHistory(String token,String node){
+        int retention=network.historyRetention(node);
+        return projection(token,(s,user)->{
+            long oldest=Math.floorDiv(Instant.now().getEpochSecond(),60)*60-(retention-1L)*60;
+            return Flux.from(col(METRICS).find(s,and(eq("node",node),gte("minute",oldest))).sort(Indexes.ascending("minute")))
+                .map(d->value(d,RelayDirectory.Minute.class)).collectList()
+                .map(rows->new RelayDirectory.History(node,retention,rows,true));
+        });
+    }
+    private Mono<List<NetworkAuthority.Device>> currentDevices(ClientSession s,RoomDirectory.RoomView room,long now){
+        List<String> ids=room.members().stream().map(v->v.userId().toString()).toList();
+        return Flux.from(col("network_devices").find(s,and(in("_id",ids),gt("data.seen",now-network.deviceHeartbeatSeconds()))))
+            .map(d->value(d,NetworkAuthority.Device.class)).collectList().flatMap(devices->
+                Flux.from(col("sessions").find(s,in("_id",ids))).map(d->value(d,Platform.Session.class))
+                    .filter(u->u.expiresAt().isAfter(Instant.ofEpochSecond(now))).collectMap(u->u.user().id())
+                    .flatMap(sessions->Flux.from(col("suspensions").find(s,and(in("data.target.id",ids),eq("data.revokedAt",null),
+                                    or(eq("data.until",null),gt("data.until",now)))))
+                        .map(d->((Document)((Document)d.get("data")).get("target")).getString("id")).collectList()
+                        .map(banned->devices.stream().filter(d->{
+                            Platform.Session user=sessions.get(d.userId());
+                            return user!=null&&user.digest().equals(d.session())&&!banned.contains(d.userId().toString());
+                        }).toList())));
+    }
+    Mono<Boolean> relayAuthorize(String secret,String instance,NetworkAuthority.Lease requested){
+        return Mono.defer(()->{
+            long now=Instant.now().getEpochSecond();
+            if(!network.validStoredLease(secret,requested,now))return Mono.just(false);
+            try{UUID.fromString(requested.network());}catch(Exception e){return Mono.just(false);}
+            return scoped(transaction(s->metadata(s).flatMap(m->{
+                long observedAt=Instant.now().getEpochSecond();
+                return Mono.from(col("rooms").find(s,eq("data.view.networkId",requested.network())).first())
+                    .map(d->value(d,RoomDirectory.StoredRoom.class).view())
+                    .flatMap(room->optionalValue(s,"network_allocations",requested.network(),NetworkAuthority.RoomState.class)
+                        .flatMap(state->{
+                            if(state.isEmpty()||!requested.node().equals(state.get().relayNode()))return Mono.just(false);
+                            return optionalValue(s,"relay_generations",requested.node(),Long.class).flatMap(generation->
+                                optionalValue(s,"relay_nodes",requested.node(),RelayDirectory.Live.class).flatMap(live->
+                                    currentDevices(s,room,observedAt).map(devices->network.authorizeStored(secret,instance,requested,room,state.get(),
+                                        devices.stream().filter(d->d.seen()+network.deviceHeartbeatSeconds()>Instant.now().getEpochSecond()).toList(),generation.orElse(0L),live.orElse(null),Instant.now().getEpochSecond()))));
+                        })).defaultIfEmpty(false);
+            }))).doOnNext(result->leaseReads.increment());
+        });
+    }
+    Mono<Optional<NetworkAuthority.SignedSnapshot>> fastSnapshot(String token,String nonce,Map<String,Integer> measurements,Scheduler worker){
+        return Mono.defer(()->{
+            network.validateSnapshotNonce(nonce);
+            return scoped(transaction(s->metadata(s).flatMap(meta->session(s,token)).flatMap(actor->{
+                String id=actor.user().id().toString();
+                long now=Instant.now().getEpochSecond();
+                return optionalValue(s,"network_devices",id,NetworkAuthority.Device.class).flatMap(device->{
+                    if(device.isEmpty()||!device.get().session().equals(actor.digest()))return Mono.error(new SecurityException("enroll this device first"));
+                    return Mono.from(col("rooms").find(s,eq("data.view.members.userId",id)).first())
+                        .map(d->value(d,RoomDirectory.StoredRoom.class).view()).flatMap(room->
+                            optionalValue(s,"network_allocations",room.networkId().toString(),NetworkAuthority.RoomState.class).flatMap(allocation->{
+                                if(allocation.isEmpty())return Mono.just(Optional.<NetworkAuthority.SignedSnapshot>empty());
+                                var state=allocation.get();
+                                var prior=device.get();
+                                var refreshed=new NetworkAuthority.Device(prior.userId(),prior.session(),prior.identity(),prior.wireguard(),now);
+                                var sample=network.validatedProbeSample(measurements,now);
+                                return currentDevices(s,room,now).flatMap(devices->{
+                                    var active=new ArrayList<>(devices.stream().filter(d->!d.userId().equals(refreshed.userId())).toList());
+                                    active.add(refreshed);
+                                    return optionalValue(s,"relay_generations",state.relayNode(),Long.class).flatMap(generation->
+                                        Flux.from(col("relay_nodes").find(s)).collectMap(d->d.getString("_id"),d->value(d,RelayDirectory.Live.class))
+                                        .flatMap(live->Flux.from(col("relay_samples").find(s,in("_id",active.stream().map(NetworkAuthority.Device::session).toList())))
+                                            .collectMap(d->d.getString("_id"),d->value(d,RelayDirectory.Sample.class))
+                                            .flatMap(probes->{
+                                                if(sample!=null)probes.put(actor.digest(),sample);
+                                                // Sign off the Netty/driver callback threads. Reuse
+                                                // cannot create or extend the committed lease.
+                                                return Mono.fromCallable(()->network.reuseStoredSnapshot(room,state,refreshed,active,nonce,now,
+                                                        generation.orElse(0L),live,probes)).subscribeOn(worker).flatMap(result->{
+                                                    if(result.isEmpty())return Mono.just(result);
+                                                    Mono<Void> write=prior.equals(refreshed)?Mono.empty():done(col("network_devices").replaceOne(s,
+                                                            and(eq("_id",id),eq("data.session",actor.digest())),schema.entityRow(id,refreshed)));
+                                                    if(sample!=null)write=write.then(done(col("relay_samples").replaceOne(s,eq("_id",actor.digest()),
+                                                            schema.entityRow(actor.digest(),sample),new ReplaceOptions().upsert(true))));
+                                                    return write.thenReturn(result);
+                                                });
+                                            })));
+                                });
+                            })).defaultIfEmpty(Optional.empty());
+                });
+            }))).doOnNext(r->{if(r.isPresent())scopedSnapshots.increment();else snapshotFallbacks.increment();});
+        });
+    }
+    Mono<Platform.User> authenticatedUser(String token){return projection(token,(s,u)->Mono.just(u.user()));}
     Mono<Competition.Leaderboard> leaderboard(String token,String game,int offset,int limit){
         Competition.game(game);page(offset,limit);
         return projection(token,(s,u)->{
