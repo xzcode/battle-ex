@@ -16,7 +16,17 @@ public final class Competition {
     public enum Mode { CASUAL, RANKED, TOURNAMENT }
     public enum State { WAITING, RUNNING, AWAITING_RESULT, FINISHED, CANCELLED, ABANDONED, NO_RESULT, RATED }
     public enum Outcome { WIN, DRAW }
-    public record Ticket(User user,String gameId,Mode mode,long queuedAt) {}
+    public record Ticket(User user,String gameId,Mode mode,long queuedAt,String region) {
+        public Ticket {region=normalizeRegion(region);}
+        public Ticket(User user,String gameId,Mode mode,long queuedAt){this(user,gameId,mode,queuedAt,"global");}
+        public String partition(){return gameId+":"+mode+":"+region;}
+    }
+    public static String normalizeRegion(String region){
+        if(region==null||region.isBlank())return "global";
+        String value=region.strip().toLowerCase(Locale.ROOT);
+        if(!value.matches("[a-z0-9][a-z0-9-]{0,31}"))throw new IllegalArgumentException("invalid matchmaking region");
+        return value;
+    }
     public record Rating(String gameId,User user,long points,long played,long wins,long draws,long losses) {}
     public record Change(UUID userId,long before,long after) {}
     public record Match(UUID id,UUID roomId,String gameId,Mode mode,List<User> players,State state,
@@ -55,7 +65,9 @@ public final class Competition {
     public Match active(UUID user){UUID id=active.get(user);return id==null?null:matches.get(id);}
     private Match awaiting(UUID user){UUID id=pending.get(user);return id==null?null:matches.get(id);}
     public View view(UUID user){return new View(tickets.get(user),active(user),awaiting(user),authority.games());}
-    public void enqueue(User user,String gameId,Mode mode,long now){
+    public void enqueue(User user,String gameId,Mode mode,long now){enqueue(user,gameId,mode,now,"global");}
+    public void enqueue(User user,String gameId,Mode mode,long now,String region){
+        String normalized=normalizeRegion(region);
         game(gameId);
         if(mode==null||mode==Mode.TOURNAMENT)throw new IllegalArgumentException("invalid matchmaking mode");
         if(active(user.id())!=null)throw new IllegalStateException("already in an assigned match");
@@ -65,21 +77,22 @@ public final class Competition {
         }
         Ticket previous=tickets.get(user.id());
         if(previous!=null){
-            if(previous.gameId().equals(gameId)&&previous.mode()==mode)return;
+            if(previous.gameId().equals(gameId)&&previous.mode()==mode&&previous.region().equals(normalized))return;
             throw new IllegalStateException("cancel the existing queue first");
         }
-        tickets.put(user.id(),new Ticket(user,gameId,mode,now));
+        tickets.put(user.id(),new Ticket(user,gameId,mode,now,normalized));
     }
     public boolean cancel(UUID user){return tickets.remove(user)!=null;}
     private static final Comparator<Ticket> ORDER=Comparator.comparingLong(Ticket::queuedAt).thenComparing(t->t.user().id());
     private static long window(long now,Ticket t){return 100+50*Math.max(0,(now-t.queuedAt())/30);}
-    public Pair nextPair(long now){
-        var ordered=tickets.values().stream().sorted(ORDER).toList();
+    public Pair nextPair(long now){return nextPair(now,Set.of());}
+    public Pair nextPair(long now,Set<String> partitions){
+        var ordered=tickets.values().stream().filter(t->partitions.isEmpty()||partitions.contains(t.partition())).sorted(ORDER).toList();
         for(int i=0;i<ordered.size();i++){
             Ticket a=ordered.get(i);
             for(int j=i+1;j<ordered.size();j++){
                 Ticket b=ordered.get(j);
-                if(a.mode()!=b.mode()||!a.gameId().equals(b.gameId()))continue;
+                if(a.mode()!=b.mode()||!a.gameId().equals(b.gameId())||!a.region().equals(b.region()))continue;
                 if(a.mode()==Mode.RANKED){
                     long gap=Math.abs(points(a.gameId(),a.user().id())-points(b.gameId(),b.user().id()));
                     if(gap>Math.min(window(now,a),window(now,b)))continue;
@@ -202,7 +215,7 @@ public final class Competition {
         game(gameId);page(offset,limit);
         var rows=ratings.values().stream().filter(r->r.gameId().equals(gameId))
                 .sorted(Comparator.comparingLong(Rating::points).reversed().thenComparing(Comparator.comparingLong(Rating::wins).reversed())
-                        .thenComparing(r->r.user().id())).toList();
+                        .thenComparing(r->r.user().id().toString())).toList();
         var result=new ArrayList<Standing>();int from=Math.min(offset,rows.size()),to=(int)Math.min((long)from+limit,rows.size());
         for(int i=from;i<to;i++)result.add(new Standing(i+1L,rows.get(i)));
         return new Leaderboard(gameId,offset,rows.size(),List.copyOf(result));
@@ -215,7 +228,7 @@ public final class Competition {
     public List<Match> runningMatches(){return matches.values().stream().filter(m->m.state()==State.RUNNING).toList();}
     public History history(UUID user,int offset,int limit){
         page(offset,limit);
-        var rows=matches.values().stream().filter(m->m.contains(user)).sorted(Comparator.comparingLong(Match::createdAt).reversed().thenComparing(Match::id)).toList();
+        var rows=matches.values().stream().filter(m->m.contains(user)).sorted(Comparator.comparingLong(Match::createdAt).reversed().thenComparing(m->m.id().toString())).toList();
         int from=Math.min(offset,rows.size()),to=(int)Math.min((long)from+limit,rows.size());
         return new History(offset,rows.size(),List.copyOf(rows.subList(from,to)));
     }

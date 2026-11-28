@@ -4,6 +4,9 @@ import com.battleex.platform.Platform;
 import com.battleex.platform.ReactiveWork;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.beans.factory.annotation.Value;
+import com.battleex.competition.Competition;
+import java.util.*;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.socket.*;
 import reactor.core.publisher.Flux;
@@ -23,13 +26,27 @@ public final class LobbySocket implements WebSocketHandler {
     private final Platform platform;
     private final ObjectMapper json;
     private final ReactiveWork work;
+    private final boolean workerEnabled;
+    private final Set<String> partitions;
 
     private static final class InvalidFrame extends RuntimeException {}
 
-    public LobbySocket(Platform platform, ObjectMapper json, ReactiveWork work) {
+    public LobbySocket(Platform platform, ObjectMapper json, ReactiveWork work,
+            @Value("${battle.match.worker-enabled:true}") boolean workerEnabled,
+            @Value("${battle.match.partitions:*}") String partitionConfig) {
         this.platform = platform;
         this.json = json;
-        this.work = work;
+        this.work = work;this.workerEnabled=workerEnabled;
+        var parsed=new TreeSet<String>();
+        if(!partitionConfig.strip().equals("*"))for(String raw:partitionConfig.split(",")){
+            String[] p=raw.strip().split(":");
+            if(p.length!=3)throw new IllegalArgumentException("match partition must be game:mode:region");
+            Competition.game(p[0]);
+            var mode=Competition.Mode.valueOf(p[1]);
+            if(mode==Competition.Mode.TOURNAMENT)throw new IllegalArgumentException("not a queue mode");
+            parsed.add(p[0]+":"+mode+":"+Competition.normalizeRegion(p[2]));
+        }
+        this.partitions=Set.copyOf(parsed);
     }
 
     @Override public Mono<Void> handle(WebSocketSession session) {
@@ -46,9 +63,9 @@ public final class LobbySocket implements WebSocketHandler {
                     if (!first.hasValue()) return Mono.<Void>empty();
                     return work.state(() -> authenticate(first.get()))
                             .flatMap(token -> {
-                                Flux<WebSocketMessage> outbound = Flux.interval(Duration.ZERO, Duration.ofSeconds(1))
+                                Flux<WebSocketMessage> outbound = work.lobbyTicks()
                                         .onBackpressureLatest()
-                                        .concatMap(tick -> work.state(() -> platform.lobby(token)), 1)
+                                        .concatMap(tick -> work.lobby(platform,token), 1)
                                         .distinctUntilChanged()
                                         .concatMap(lobby -> Mono.fromCallable(() -> json.writeValueAsString(
                                                 Map.of("type","lobby","data",lobby))), 1)
@@ -86,5 +103,5 @@ public final class LobbySocket implements WebSocketHandler {
     // Keep session expiration active even when there are no live WebSockets.
     // Spring's scheduling thread is separate from Reactor Netty.
     @Scheduled(fixedDelay=1000)
-    public Mono<Void> sweep() { return work.stateRun(platform::sweep); }
+    public Mono<Void> sweep() { return workerEnabled?work.stateRun(()->platform.workerTick(partitions)):Mono.empty(); }
 }

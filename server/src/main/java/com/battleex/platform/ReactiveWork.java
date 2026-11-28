@@ -3,6 +3,7 @@ package com.battleex.platform;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Flux;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
 
@@ -21,7 +22,14 @@ public final class ReactiveWork implements DisposableBean {
     private final Scheduler password = Schedulers.newBoundedElastic(
             Math.max(2, Math.min(8, Runtime.getRuntime().availableProcessors())), 256, "battle-password");
 
+    public ClusterAuthority.StorageMetrics storageMetrics(){return cluster.storageMetrics();}
+    public Mono<Platform.Lobby> lobby(Platform p,String token){return cluster.lobby(p,token,state);}
+    public Mono<com.battleex.competition.Competition.History> history(Platform p,String token,int offset,int limit){return cluster.history(p,token,offset,limit,state);}
+    public Mono<com.battleex.competition.Competition.Leaderboard> leaderboard(Platform p,String token,String game,int offset,int limit){return cluster.leaderboard(p,token,game,offset,limit,state);}
+    public Mono<com.battleex.room.RoomDirectory.RoomView> roomReady(Platform p,String token,java.util.UUID id,boolean value){return cluster.roomReady(p,token,id,value,state);}
+    public Mono<com.battleex.room.RoomDirectory.RoomView> roomBuild(Platform p,String token,java.util.UUID id,com.battleex.room.RoomDirectory.GameBuild build){return cluster.roomBuild(p,token,id,build,state);}
     public boolean persistent(){return cluster.enabled();}
+    public Flux<Long> lobbyTicks(){return cluster.splitMode()?Flux.merge(Flux.just(0L),cluster.notifications(),Flux.interval(java.time.Duration.ofSeconds(5))):Flux.interval(java.time.Duration.ZERO,java.time.Duration.ofSeconds(1));}
 
     public <T> Mono<T> state(Callable<T> task) {
         return cluster.execute(task,state);

@@ -20,7 +20,7 @@ public final class RelayDirectory {
     public record Limits(int maxConnections, long bytesPerSecond) {}
     public record Candidate(String id, String region, String relayURL) {}
     public record PublicStatus(String id, String region, String state, long seenAt, Stats stats,
-                        int maxConnections, long bytesPerSecond) {}
+                        int maxConnections, long bytesPerSecond,int reservedConnections) {}
     record Node(Config config, String secret, boolean legacy) {}
     public record Live(String instance, long seen, boolean draining, Stats stats) {}
     public record Sample(long seen, Map<String,Integer> measurements) {}
@@ -34,6 +34,7 @@ public final class RelayDirectory {
     private final int retentionMinutes;
     private final boolean dynamic;
     private final boolean ice;
+    private boolean instanceFence;
 
     RelayDirectory(ObjectMapper mapper, String directory, boolean ice, String legacyId,
                    String legacyURL, String legacyStun, String legacySecretFile) throws Exception {
@@ -134,6 +135,14 @@ public final class RelayDirectory {
         return a.secret().equals(b.secret())&&a.config().relayURL().equals(b.config().relayURL())
                 &&Objects.equals(a.config().stunURL(),b.config().stunURL());
     }
+    void configureFence(boolean enabled){instanceFence=enabled;}
+    boolean instanceAllowed(String node,String instance,long now){
+        Node configured=nodes.get(node);
+        if(configured==null)return false;
+        if(!instanceFence||configured.legacy())return true;
+        Live observed=live.get(node);
+        return observed!=null&&observed.seen()+TTL>now&&!observed.draining()&&observed.instance().equals(instance);
+    }
     long generation(String id){return generations.getOrDefault(id,0L);}
     boolean empty(){return nodes.isEmpty();}
     boolean authenticated(String id,String secret){
@@ -144,7 +153,14 @@ public final class RelayDirectory {
         if(!dynamic||h==null||!authenticated(h.node(),secret)||h.instance()==null||
                 !h.instance().matches("[a-f0-9]{32}")||h.stats()==null||h.stats().connections()<0||
                 h.stats().connections()>256||h.stats().ingress_bytes()<0||h.stats().egress_bytes()<0||h.stats().dropped_packets()<0)return null;
-        Live previous=live.put(h.node(),new Live(h.instance(),now,h.draining(),h.stats()));
+        Live previous=live.get(h.node());
+        if(instanceFence&&previous!=null&&!previous.instance().equals(h.instance())){
+            if(previous.seen()+TTL>now)return null;
+            // A new process takes over only after the old heartbeat lease.
+            // Its generation changes the signed room lease fingerprint.
+            generations.put(h.node(),++nextGeneration);
+        }
+        live.put(h.node(),new Live(h.instance(),now,h.draining(),h.stats()));
         recordHistory(h,previous,now);
         Config c=nodes.get(h.node()).config();
         return new Limits(c.maxConnections(),c.bytesPerSecond());
@@ -200,12 +216,13 @@ public final class RelayDirectory {
         return nodes.values().stream().filter(n->healthy(n,now))
                 .map(n->new Candidate(n.config().id(),n.config().region(),n.config().relayURL())).toList();
     }
-    List<PublicStatus> status(long now){
+    List<PublicStatus> status(long now){return status(now,Map.of());}
+    List<PublicStatus> status(long now,Map<String,Integer> reserved){
         return nodes.values().stream().map(n->{
             Live l=live.get(n.config().id());
             String state=n.legacy()?"static":l==null||l.seen()+TTL<=now?"offline":l.draining()?"draining":"online";
             return new PublicStatus(n.config().id(),n.config().region(),state,l==null?0:l.seen(),l==null?null:l.stats(),
-                    n.config().maxConnections(),n.config().bytesPerSecond());
+                    n.config().maxConnections(),n.config().bytesPerSecond(),reserved.getOrDefault(n.config().id(),0));
         }).toList();
     }
     void report(String session,Map<String,Integer> metrics,long now){
@@ -233,13 +250,17 @@ public final class RelayDirectory {
         return worst+total/sessions.size()+50.0*connections(n)/n.config().maxConnections();
     }
     String select(String current,long changedAt,List<String> sessions,boolean waiting,long now){
+        return select(current,changedAt,sessions,waiting,now,Map.of(),0,0,false);
+    }
+    String select(String current,long changedAt,List<String> sessions,boolean waiting,long now,
+                  Map<String,Integer> reserved,int demand,int priorReservation,boolean capacityAware){
         Node previous=current==null?null:nodes.get(current);
-        boolean keep=previous!=null&&healthy(previous,now);
+        boolean keep=previous!=null&&healthy(previous,now)&&(!capacityAware||hasCapacity(previous,current,reserved,demand,priorReservation));
         List<Node> eligible=nodes.values().stream().filter(n->healthy(n,now))
-                .filter(n->n==previous||connections(n)<n.config().maxConnections()).toList();
+                .filter(n->capacityAware?hasCapacity(n,current,reserved,demand,priorReservation):n==previous||connections(n)<n.config().maxConnections()).toList();
         if(eligible.isEmpty())return null;
         Comparator<Node> fallback=Comparator.comparingInt((Node n)->n.config().priority())
-                .thenComparingDouble(n->(double)connections(n)/n.config().maxConnections()).thenComparing(n->n.config().id());
+                .thenComparingDouble(n->(double)Math.max(connections(n),reserved.getOrDefault(n.config().id(),0))/n.config().maxConnections()).thenComparing(n->n.config().id());
         Node best=eligible.stream().min(fallback).orElseThrow();
         // Only compare measurements when all healthy candidates have fresh reports
         // from all active room devices. Missing samples are not zero latency.
@@ -253,6 +274,16 @@ public final class RelayDirectory {
         if(before>=5000&&after<5000&&now-changedAt>=5)return best.config().id();
         if(waiting&&now-changedAt>=SWITCH_COOLDOWN&&before-after>=Math.max(25,before*0.20))return best.config().id();
         return current;
+    }
+
+    private boolean hasCapacity(Node n,String current,Map<String,Integer> reserved,int demand,int priorReservation){
+        int other=reserved.getOrDefault(n.config().id(),0);
+        boolean same=n.config().id().equals(current);
+        // Heartbeat connections include existing reservations in use. Do not
+        // count them twice, but do account for the new room's worst-case pairs.
+        long used=same?Math.max((long)other+demand,(long)connections(n)+Math.max(0,demand-priorReservation))
+                :(long)Math.max(other,connections(n))+demand;
+        return used<=n.config().maxConnections();
     }
 
     static boolean validURL(String value){

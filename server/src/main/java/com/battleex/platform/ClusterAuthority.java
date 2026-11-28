@@ -1,6 +1,9 @@
 package com.battleex.platform;
 
 import com.battleex.network.NetworkAuthority;
+import com.battleex.competition.Competition;
+import com.battleex.room.RoomDirectory;
+import java.util.UUID;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.mongodb.*;
@@ -15,11 +18,13 @@ import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.Flux;
 import reactor.core.scheduler.Scheduler;
 import reactor.util.retry.Retry;
 
 import java.time.Duration;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeoutException;
 import static com.mongodb.client.model.Filters.*;
@@ -40,6 +45,17 @@ public final class ClusterAuthority implements SmartInitializingSingleton, Dispo
         public Unavailable(){super("shared authority unavailable; retry later");}
     }
     private static final class Conflict extends RuntimeException {}
+    public record StorageMetrics(String mode,long cachedVersion,long transactionAttempts,long rowCommits,long retries,long cacheHits,long fullLoads,long deltaLoads,long changedRows,long projectedReads,long scopedRoomWrites) {}
+    public StorageMetrics storageMetrics(){return split==null?new StorageMetrics(enabled?"mongo":"memory",0,0,0,0,0,0,0,0,0,0):split.metrics();}
+    public Mono<Platform.Lobby> lobby(Platform p,String token,Scheduler worker){return splitMode&&ready?split.lobby(token):execute(()->p.lobby(token),worker);}
+    public Mono<Competition.History> history(Platform p,String token,int offset,int limit,Scheduler worker){return splitMode&&ready?split.history(token,offset,limit):execute(()->p.matchHistory(token,offset,limit),worker);}
+    public Mono<Competition.Leaderboard> leaderboard(Platform p,String token,String game,int offset,int limit,Scheduler worker){return splitMode&&ready?split.leaderboard(token,game,offset,limit):execute(()->p.leaderboard(token,game,offset,limit),worker);}
+    public Mono<RoomDirectory.RoomView> roomReady(Platform p,String token,UUID id,boolean ready,Scheduler worker){
+        return splitMode&&this.ready?split.roomMutation(token,id,ready,null,false):execute(()->p.ready(token,id,ready),worker);
+    }
+    public Mono<RoomDirectory.RoomView> roomBuild(Platform p,String token,UUID id,RoomDirectory.GameBuild build,Scheduler worker){
+        return splitMode&&ready?split.roomMutation(token,id,null,build,true):execute(()->p.reportGameBuild(token,id,build),worker);
+    }
     public record Snapshot(Platform.StateDump platform, NetworkAuthority.StateDump network) {}
     private record Attempt<T>(long version,String oldPayload,String payload,T result) {}
 
@@ -47,6 +63,9 @@ public final class ClusterAuthority implements SmartInitializingSingleton, Dispo
     private final ObjectProvider<NetworkAuthority> networks;
     private final ObjectMapper json;
     private final boolean enabled;
+    private final boolean splitMode,migrate;
+    private final MongoDatabase database;
+    private SplitAuthority split;
     private final MongoClient client;
     private final MongoCollection<Document> collection;
     private String fingerprint;
@@ -54,25 +73,31 @@ public final class ClusterAuthority implements SmartInitializingSingleton, Dispo
 
     public ClusterAuthority(ObjectProvider<Platform> platforms,ObjectProvider<NetworkAuthority> networks,
             ObjectMapper mapper,@Value("${battle.state-mode:memory}") String mode,
-            @Value("${battle.mongo-uri:}") String uri,@Value("${battle.mongo-db:battle_ex}") String database){
+            @Value("${battle.mongo-uri:}") String uri,@Value("${battle.mongo-db:battle_ex}") String database,
+            @Value("${battle.mongo-migrate-legacy:false}") boolean migrate){
         this.platforms=platforms;this.networks=networks;
         json=mapper.copy().enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
-        if(!mode.equals("memory")&&!mode.equals("mongo"))throw new IllegalArgumentException("state mode must be memory or mongo");
-        enabled=mode.equals("mongo");
-        if(!enabled){client=null;collection=null;return;}
+        if(!Set.of("memory","mongo","mongo-split").contains(mode))throw new IllegalArgumentException("state mode must be memory, mongo or mongo-split");
+        splitMode=mode.equals("mongo-split");enabled=!mode.equals("memory");this.migrate=migrate;
+        if(migrate&&!splitMode)throw new IllegalArgumentException("legacy migration requires mongo-split");
+        if(!enabled){client=null;collection=null;this.database=null;return;}
         if(uri.isBlank()||!database.matches("[a-zA-Z0-9_-]+"))
             throw new IllegalArgumentException("MongoDB account storage is required for shared authority");
         client=MongoClients.create(new ConnectionString(uri));
-        collection=client.getDatabase(database).getCollection("authority_state")
+        this.database=client.getDatabase(database);
+        collection=this.database.getCollection("authority_state")
                 .withReadPreference(ReadPreference.primary()).withReadConcern(ReadConcern.MAJORITY)
                 .withWriteConcern(WriteConcern.MAJORITY);
     }
     public boolean enabled(){return enabled;}
+    public boolean splitMode(){return splitMode;}
+    public Flux<Long> notifications(){return split==null?Flux.never():split.notifications();}
 
     @Override public void afterSingletonsInstantiated(){
         if(!enabled)return;
         Platform platform=platforms.getObject();NetworkAuthority network=networks.getObject();
         fingerprint=network.configurationFingerprint()+platform.competitionFingerprint();
+        if(splitMode){split=new SplitAuthority(client,database,platform,network,json,fingerprint,migrate);split.initialize();ready=true;LOG.info("Split MongoDB authority enabled (schema 2)");return;}
         String payload;
         synchronized(platform){payload=encode(platform,network);}
         // Startup only. An existing authority must match the exact schema and
@@ -93,6 +118,7 @@ public final class ClusterAuthority implements SmartInitializingSingleton, Dispo
 
     public <T> Mono<T> execute(Callable<T> task,Scheduler worker){
         if(!enabled)return Mono.fromCallable(task).subscribeOn(worker);
+        if(splitMode)return Mono.defer(()->ready?split.execute(task,worker):Mono.error(new Unavailable()));
         return Mono.defer(()->{
             if(!ready)return Mono.error(new Unavailable());
             return read().flatMap(doc->Mono.fromCallable(()->apply(doc,task)).subscribeOn(worker))
@@ -148,5 +174,13 @@ public final class ClusterAuthority implements SmartInitializingSingleton, Dispo
             n.importState(s.network());
         }catch(Exception e){throw new Unavailable();}
     }
-    @Override public void destroy(){ready=false;if(client!=null)client.close();}
+    public Mono<Boolean> readiness(){
+        if(!enabled)return Mono.just(true);
+        return Mono.defer(()->{
+            if(!ready)return Mono.just(false);
+            if(splitMode)return split.readiness();
+            return read().map(doc->{validate(doc);return true;}).onErrorReturn(false);
+        });
+    }
+    @Override public void destroy(){ready=false;if(split!=null)split.close();if(client!=null)client.close();}
 }

@@ -13,7 +13,7 @@ const issuer=generateKeyPairSync('ed25519'),stranger=generateKeyPairSync('ed2551
 const publicKey=issuer.publicKey.export({format:'der',type:'spki'}).subarray(-32).toString('hex')
 const processes=new Set(),sockets=new Set()
 const env={...process.env,BATTLE_BIND:'127.0.0.1',BATTLE_PORT:'0',
- BATTLE_STATE_MODE:cluster?'mongo':'memory',BATTLE_MONGO_URI:cluster?process.env.BATTLE_MONGO_URI:'',
+ BATTLE_STATE_MODE:cluster?(process.env.BATTLE_TEST_STATE_MODE||'mongo'):'memory',BATTLE_MONGO_URI:cluster?process.env.BATTLE_MONGO_URI:'',
  BATTLE_COMPETITION_RESULT_ISSUER:publicKey,BATTLE_COMPETITION_RANKED_GAMES:'cs16',
  BATTLE_NETWORK_ISSUER_KEY_FILE:'',BATTLE_NETWORK_RELAY_DIRECTORY_FILE:'',BATTLE_NETWORK_RELAY_URL:'',BATTLE_NETWORK_RELAY_SECRET_FILE:''}
 const sleep=ms=>new Promise(r=>setTimeout(r,ms))

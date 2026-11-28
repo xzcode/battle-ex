@@ -32,12 +32,12 @@ public final class NetworkAuthority {
                            List<RelayDirectory.Candidate> relayCandidates, String gameId, String discoveryProfile) {}
     public record Device(UUID userId, String session, String identity, String wireguard, long seen) {}
     public record RoomState(int subnet, String fingerprint, long revision, long leaseExpiry,
-                             Map<UUID,Integer> addresses, String relayNode, long changedAt) {}
+                             Map<UUID,Integer> addresses, String relayNode, long changedAt,int reservedConnections) {}
     private static final byte[] SNAP_DOMAIN = "battle-ex/snapshot/v1\0".getBytes(StandardCharsets.UTF_8);
     private static final byte[] LEASE_DOMAIN = "network-ex/lease/v1\0".getBytes(StandardCharsets.UTF_8);
     private static final HexFormat HEX = HexFormat.of();
     private static final Base64.Encoder B64 = Base64.getUrlEncoder().withoutPadding();
-    private static final int POOL = 4096; // 10.160.0.0/12, /24 per active room.
+    private static final int LEGACY_POOL = 4096, MAX_POOL=16384; // stable old /24s, optional 10.128.0.0/10 expansion.
     private static final long HEARTBEAT_SECONDS = 15, SNAPSHOT_SECONDS = 12, MAX_LEASE_SECONDS = 840;
     private static final Logger LOG=LoggerFactory.getLogger(NetworkAuthority.class);
     private final Platform platform;
@@ -49,6 +49,8 @@ public final class NetworkAuthority {
     private final boolean gameDiscovery;
     private final String directoryFile;
     private final boolean clustered;
+    private final int pool;
+    private final boolean capacityAware,instanceFence;
     private final int retentionMinutes;
     private final long leaseSeconds;
     private boolean reloadRejected;
@@ -69,11 +71,17 @@ public final class NetworkAuthority {
             @Value("${battle.network.lease-seconds:840}") long leaseSeconds,
             @Value("${battle.network.metrics-retention-minutes:1440}") int retentionMinutes,
             @Value("${battle.state-mode:memory}") String stateMode,
-            @Value("${battle.network.game-discovery:false}") boolean gameDiscovery) throws Exception {
-        this.platform=platform; this.json=json; this.ice=ice; this.clustered=stateMode.equals("mongo");this.gameDiscovery=gameDiscovery;
+            @Value("${battle.network.game-discovery:false}") boolean gameDiscovery,
+            @Value("${battle.network.pool-subnets:4096}") int pool,
+            @Value("${battle.network.capacity-reservations:false}") boolean capacityAware,
+            @Value("${battle.network.instance-fence:false}") boolean instanceFence) throws Exception {
+        this.platform=platform; this.json=json; this.ice=ice; this.clustered=!stateMode.equals("memory");this.gameDiscovery=gameDiscovery;
+        if(pool<LEGACY_POOL||pool>MAX_POOL)throw new IllegalArgumentException("IPv4 pool must contain 4096–16384 room subnets");
+        this.pool=pool;this.capacityAware=capacityAware;this.instanceFence=instanceFence;
         if(leaseSeconds<30||leaseSeconds>MAX_LEASE_SECONDS)throw new IllegalArgumentException("lease seconds must be 30–840");
         this.leaseSeconds=leaseSeconds;this.directoryFile=directoryFile;this.retentionMinutes=retentionMinutes;
         relays=new RelayDirectory(json,directoryFile,ice,node,relayURL,stunURL,secretFile,retentionMinutes);
+        relays.configureFence(instanceFence);
         if(keyFile.isBlank()) {
             if(!relays.empty()) throw new IllegalArgumentException("network issuer required");
             signer=null; issuer=""; return;
@@ -122,7 +130,7 @@ public final class NetworkAuthority {
         }
     }
     public String configurationFingerprint(){
-        return sha256("battle-authority-v1:"+issuer+":"+ice+":"+leaseSeconds+":"+retentionMinutes+":"+relays.configurationFingerprint()+(gameDiscovery?":discovery-v1":""));
+        return sha256("battle-authority-v1:"+issuer+":"+ice+":"+leaseSeconds+":"+retentionMinutes+":"+relays.configurationFingerprint()+(gameDiscovery?":discovery-v1":"")+(pool==LEGACY_POOL?"":":pool-v2:"+pool)+(capacityAware?":reservations-v1":"")+(instanceFence?":instance-fence-v1":""));
     }
     public boolean enabled(){return signer!=null;}
     public String issuer(){return issuer;}
@@ -186,11 +194,12 @@ public final class NetworkAuthority {
             if(prior!=null&&prior.session().equals(ctx.sessionDigest()))devices.remove(ctx.user().id());
         }
     }
-    public boolean authorize(String secret, Lease requested){
+    public boolean authorize(String secret, Lease requested){return authorize(secret,null,requested);}
+    public boolean authorize(String secret,String instance,Lease requested){
         if(!enabled()||requested==null)return false;
         synchronized(platform){
             long now=Instant.now().getEpochSecond();
-            if(!relays.authenticated(requested.node(),secret)||requested.expires()<=now)return false;
+            if(!relays.authenticated(requested.node(),secret)||!relays.instanceAllowed(requested.node(),instance,now)||requested.expires()<=now)return false;
             prune(now);
             UUID network;
             try{network=UUID.fromString(requested.network());}catch(Exception e){return false;}
@@ -210,7 +219,7 @@ public final class NetworkAuthority {
         synchronized(platform){return enabled()?relays.heartbeat(secret,heartbeat,Instant.now().getEpochSecond()):null;}
     }
     public List<RelayDirectory.PublicStatus> relayStatus(String token){
-        synchronized(platform){platform.authenticate(token);return relays.status(Instant.now().getEpochSecond());}
+        synchronized(platform){platform.authenticate(token);long now=Instant.now().getEpochSecond();return relays.status(now,reservations(null,now));}
     }
     public RelayDirectory.History relayHistory(String token,String node){
         synchronized(platform){
@@ -229,13 +238,14 @@ public final class NetworkAuthority {
     private RoomState state(com.battleex.room.RoomDirectory.RoomView room,List<Device> active,long now){
         if(active.size()>65)throw new IllegalStateException("current engine supports 64 peers per device");
         var old=networks.get(room.networkId());
+        int demand=capacityAware?active.size()*(active.size()-1):0;
         String selected=relays.select(old==null?null:old.relayNode(),old==null?0:old.changedAt(),
                 active.stream().map(Device::session).toList(),
-                room.state()==com.battleex.room.RoomDirectory.State.WAITING,now);
+                room.state()==com.battleex.room.RoomDirectory.State.WAITING,now,reservations(room.networkId(),now),demand,old==null||old.leaseExpiry()<=now?0:old.reservedConnections(),capacityAware);
         if(selected==null)throw new NoRelay();
         long changedAt=old==null||!selected.equals(old.relayNode())?now:old.changedAt();
         String fingerprint=selected+":"+relays.generation(selected)+":"+room.membershipRevision()+":"+String.join(",",active.stream().map(d->d.userId()+":"+d.session()+":"+d.identity()+":"+d.wireguard()).toList());
-        if(old!=null&&old.fingerprint().equals(fingerprint)&&old.leaseExpiry()>now+Math.min(20,leaseSeconds/3))return old;
+        if(old!=null&&old.fingerprint().equals(fingerprint)&&old.reservedConnections()==demand&&old.leaseExpiry()>now+Math.min(20,leaseSeconds/3))return old;
         int subnet=old==null?allocate(now):old.subnet();
         var addresses=new HashMap<UUID,Integer>();
         if(old!=null)for(var m:room.members()){
@@ -247,9 +257,17 @@ public final class NetworkAuthority {
             addresses.put(m.userId(),host);
         }
         long revision=revisions.merge(room.networkId(),1L,Long::sum);
-        var next=new RoomState(subnet,fingerprint,revision,now+leaseSeconds,Map.copyOf(addresses),selected,changedAt);
+        var next=new RoomState(subnet,fingerprint,revision,now+leaseSeconds,Map.copyOf(addresses),selected,changedAt,demand);
         networks.put(room.networkId(),next);
         return next;
+    }
+    private Map<String,Integer> reservations(UUID except,long now){
+        Map<String,Integer> result=new HashMap<>();
+        if(capacityAware)networks.forEach((id,state)->{
+            if(!id.equals(except)&&state.leaseExpiry()>now&&platform.roomByNetwork(id)!=null)
+                result.merge(state.relayNode(),state.reservedConnections(),Integer::sum);
+        });
+        return result;
     }
     private Lease lease(UUID network,RoomState state,Device a,Device b){
         String first=a.identity().compareTo(b.identity())<0?a.identity():b.identity();
@@ -274,11 +292,15 @@ public final class NetworkAuthority {
     private int allocate(long now){
         Set<Integer> used=new HashSet<>(quarantine.keySet());
         networks.values().forEach(s->used.add(s.subnet()));
-        int start=random.nextInt(POOL);
-        for(int n=0;n<POOL;n++){int slot=(start+n)%POOL;if(!used.contains(slot))return slot;}
+        int start=random.nextInt(pool);
+        for(int n=0;n<pool;n++){int slot=(start+n)%pool;if(!used.contains(slot))return slot;}
         throw new IllegalStateException("IPv4 room address pool exhausted");
     }
-    private static String ip(int slot,int host){return "10."+(160+(slot>>>8))+"."+(slot&255)+"."+host;}
+    static String ip(int slot,int host){
+        if(slot<0||slot>=MAX_POOL||host<1||host>254)throw new IllegalArgumentException("invalid room address");
+        int second=slot<8192?160+(slot>>>8):128+((slot-8192)>>>8);
+        return "10."+second+"."+(slot&255)+"."+host;
+    }
     private static boolean key(String value){return value!=null&&value.matches("[a-f0-9]{64}")&&!value.equals("0".repeat(64));}
     static String sha256(String s){
         try{return HEX.formatHex(MessageDigest.getInstance("SHA-256").digest(s.getBytes(StandardCharsets.UTF_8)));}

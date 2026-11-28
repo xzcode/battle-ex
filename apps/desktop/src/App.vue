@@ -109,7 +109,12 @@ async function api<T>(path:string,method='GET',body?:unknown):Promise<T>{
  catch(e){if(e instanceof ApiError&&e.status===401&&token.value===current)reset(t('noLogin'));throw e}
 }
 function applyLobby(next:Lobby){
- if(!lobby.value||next.revision>=lobby.value.revision){
+ // Independent room mutations keep the authority revision unchanged.
+ // Do not let a slower lobby response overwrite newer room-local state.
+ const prior=lobby.value
+ if(prior&&prior.activeRoom&&next.activeRoom&&
+    prior.activeRoom.id===next.activeRoom.id&&next.activeRoom.revision<prior.activeRoom.revision)return
+ if(!prior||next.revision>=prior.revision){
   const oldMatch=lobby.value?.competition?.match?.id
   lobby.value=next
   if(next.competition?.match&&next.competition.match.id!==oldMatch){view.value='lobby';filter.value='all';modal.value=null}

@@ -38,7 +38,7 @@ public final class Api {
     }
     @GetMapping("/lobby")
     Mono<Platform.Lobby> lobby(@RequestHeader(value="Authorization", required=false) String auth) {
-        return work.state(() -> platform.lobby(bearer(auth)));
+        return work.lobby(platform,bearer(auth));
     }
     @PostMapping("/rooms") @ResponseStatus(HttpStatus.CREATED)
     Mono<RoomDirectory.RoomView> create(@RequestHeader(value="Authorization", required=false) String auth,
@@ -61,15 +61,13 @@ public final class Api {
     @PostMapping("/rooms/{id}/game-build")
     Mono<RoomDirectory.RoomView> gameBuild(@RequestHeader(value="Authorization",required=false) String auth,
                                            @PathVariable UUID id,@RequestBody GameBuildReport report){
-        return work.state(()->platform.reportGameBuild(bearer(auth),id,report.build()));
+        return work.roomBuild(platform,bearer(auth),id,report.build());
     }
     @PostMapping("/rooms/{id}/ready")
     Mono<RoomDirectory.RoomView> ready(@RequestHeader(value="Authorization", required=false) String auth,
                                       @PathVariable UUID id, @RequestBody Ready request) {
-        return work.state(() -> {
-            if (request.ready() == null) throw new IllegalArgumentException("ready required");
-            return platform.ready(bearer(auth), id, request.ready());
-        });
+        if (request.ready() == null) throw new IllegalArgumentException("ready required");
+        return work.roomReady(platform,bearer(auth),id,request.ready());
     }
     @PostMapping("/rooms/{id}/start")
     Mono<RoomDirectory.RoomView> start(@RequestHeader(value="Authorization", required=false) String auth, @PathVariable UUID id) {

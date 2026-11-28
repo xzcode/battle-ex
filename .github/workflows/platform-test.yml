@@ -2,12 +2,56 @@ name: Platform business acceptance
 on:
   push:
     branches: [master]
-    paths: ['server/**', 'apps/desktop/src/**', 'apps/desktop/scripts/test-desktop.mjs', 'apps/desktop/package*.json', 'scripts/test-*.mjs', 'scripts/test-mongo.sh', 'scripts/assert-mongo-no-class.js', '.github/workflows/platform-test.yml']
+    paths: ['server/**', 'apps/desktop/src/**', 'apps/desktop/scripts/test-desktop.mjs', 'apps/desktop/package*.json', 'scripts/test-*.mjs', 'scripts/test-mongo.sh', 'scripts/assert-mongo-no-class.js', 'scripts/test-mongo-split.sh', 'scripts/test-mongo-failover.sh', '.github/workflows/platform-test.yml']
   workflow_dispatch:
   workflow_call:
 permissions:
   contents: read
 jobs:
+  split-storage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      matrix:
+        fixture: [competition, migration, workers, community, moderation]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: server/pom.xml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build service
+        run: mvn -B -ntp -f server/pom.xml test package
+      - name: Replica-set transaction acceptance
+        env:
+          FIXTURE: ${{ matrix.fixture }}
+        run: bash scripts/test-mongo-split.sh "$FIXTURE"
+  replica-failover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: server/pom.xml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: mvn -B -ntp -f server/pom.xml test package
+      - run: bash scripts/test-mongo-failover.sh
   business:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

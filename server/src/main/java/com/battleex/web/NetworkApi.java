@@ -68,8 +68,9 @@ public final class NetworkApi {
     }
     @PostMapping("/relay/authorize")
     Mono<ResponseEntity<Void>> authorize(@RequestHeader(value="X-Relay-Secret",required=false)String secret,
+             @RequestHeader(value="X-Relay-Instance",required=false)String instance,
              @RequestBody NetworkAuthority.Lease lease) {
-        return work.state(() -> ResponseEntity.status(authority.authorize(secret,lease)
+        return work.state(() -> ResponseEntity.status(authority.authorize(secret,instance,lease)
                 ? HttpStatus.NO_CONTENT : HttpStatus.FORBIDDEN).build());
     }
 }

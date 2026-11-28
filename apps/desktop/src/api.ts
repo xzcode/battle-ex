@@ -40,7 +40,7 @@ export function lobbySocket(origin:string,token:string,receive:(lobby:Lobby)=>vo
 
 export type MatchMode='CASUAL'|'RANKED'|'TOURNAMENT'
 export type MatchRecord={id:string;roomId:string;gameId:string;mode:MatchMode;players:User[];state:string;createdAt:number;startedAt:number|null;endedAt:number|null;resultDeadline:number|null;outcome:'WIN'|'DRAW'|null;winnerId:string|null;ratingChanges:{userId:string;before:number;after:number}[]}
-export type CompetitionView={ticket:{user:User;gameId:string;mode:MatchMode;queuedAt:number}|null;match:MatchRecord|null;awaitingResult:MatchRecord|null;rankedGames:string[]}
+export type CompetitionView={ticket:{user:User;gameId:string;mode:MatchMode;queuedAt:number;region?:string}|null;match:MatchRecord|null;awaitingResult:MatchRecord|null;rankedGames:string[]}
 export type Leaderboard={gameId:string;offset:number;total:number;entries:{rank:number;rating:{gameId:string;user:User;points:number;played:number;wins:number;draws:number;losses:number}}[]}
 export type MatchHistory={offset:number;total:number;entries:MatchRecord[]}
 
@@ -62,7 +62,9 @@ export type OperatorRole='MODERATOR'|'EVENT_MANAGER'|'ANALYST'
 export type OperatorAccess={root:boolean;roles:OperatorRole[];legacyModeration:boolean}
 export type RoleGrant={user:User;role:OperatorRole;grantedBy:User;at:number}
 export type OperationEvent={id:string;actor:User;action:string;subject:string;reason:string|null;at:number}
-export type OperationOverview={signedIn:number;rooms:number;runningMatches:number;queued:number;teams:number;tournaments:number;pendingReports:number;activeSuspensions:number;persistent:boolean}
+export type OperationOverview={signedIn:number;rooms:number;runningMatches:number;queued:number;teams:number;tournaments:number;pendingReports:number;activeSuspensions:number;persistent:boolean;storage?:StorageMetrics}
 
 export type OperatorSession={user:User;expiresAt:number;roomId:string|null;queued:boolean}
 export type OperatorRoom={id:string;name:string;gameId:string;visibility:string;state:string;host:string;members:number;capacity:number}
+
+export type StorageMetrics={mode:string;cachedVersion:number;transactionAttempts:number;rowCommits:number;retries:number;cacheHits:number;fullLoads:number;deltaLoads:number;changedRows:number;projectedReads:number;scopedRoomWrites?:number}

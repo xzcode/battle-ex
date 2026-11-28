@@ -100,3 +100,6 @@ Tokyo acceptance results (2026-11-27):
   and Vue TypeScript/production build passed after adding the history persistence
   indicator. Native game/adapter and populated native monitoring UI were not
   tested in this round.
+
+
+For the M10 replica-set entity-store candidate and explicit migration from this historical v1 authority, see [M10 distributed authority](M10_DISTRIBUTED_AUTHORITY.md). Do not run mixed schema versions.

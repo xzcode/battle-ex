@@ -8,7 +8,7 @@ assert(process.env.BATTLE_COMMUNITY_CLUSTER_TEST==='true'&&process.env.BATTLE_MO
 const root=fileURLToPath(new URL('../',import.meta.url)),jar=resolve(root,'server/target/battle-ex-server-0.1.0-SNAPSHOT.jar')
 const java=process.env.JAVA_HOME?resolve(process.env.JAVA_HOME,'bin/java'):'java'
 const processes=new Set(),sockets=new Set(),key=randomBytes(32).toString('base64url'),password='fixture-'+randomUUID()
-const env={...process.env,BATTLE_BIND:'127.0.0.1',BATTLE_PORT:'0',BATTLE_STATE_MODE:'mongo',
+const env={...process.env,BATTLE_BIND:'127.0.0.1',BATTLE_PORT:'0',BATTLE_STATE_MODE:process.env.BATTLE_TEST_STATE_MODE||'mongo',
  BATTLE_NETWORK_ISSUER_KEY_FILE:'',BATTLE_NETWORK_RELAY_DIRECTORY_FILE:'',BATTLE_NETWORK_RELAY_URL:'',BATTLE_NETWORK_RELAY_SECRET_FILE:'',
  BATTLE_COMPETITION_RESULT_ISSUER:'',BATTLE_COMPETITION_RANKED_GAMES:'',
  BATTLE_MODERATION_KEY_SHA256:createHash('sha256').update(key).digest('hex'),BATTLE_OPERATIONS_ROOT_USERS:''}
@@ -168,6 +168,7 @@ try{
  assert.equal((await lobby(B,await login(B,disposable))).competition.ticket,null)
  console.log('PASS: root-only redacted session/room lists, forced room close and session disconnect across instances')
  const stats=await api(B,'/operations/overview',admin(rootUser))
+ if(process.env.BATTLE_TEST_STATE_MODE==="mongo-split"){assert.equal(stats.storage.mode,"mongo-split");assert(stats.storage.scopedRoomWrites>0);assert(stats.storage.projectedReads>0)}
  assert.equal(stats.teams,2);assert.equal(stats.tournaments,1);assert.equal(stats.runningMatches,0)
  const audit=await api(A,'/operations/audit?limit=100',admin(rootUser))
  for(const type of ['ROLE_GRANTED','ROLE_REVOKED','EVENT_CREATED','EVENT_STARTED','EVENT_RETRY','EVENT_DECIDED','ROOM_CLOSED','SESSION_DISCONNECTED'])assert(audit.entries.some(x=>x.action===type))

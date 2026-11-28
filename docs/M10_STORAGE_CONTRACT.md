@@ -13,4 +13,4 @@ Mandatory persistence rules for the distributed scaling implementation.
 
 `scripts/assert-mongo-no-class.js` inspects the disposable MongoDB test database after the normal integration fixtures, recursively checking BSON fields and the legacy JSON payload. It must remain part of acceptance as new collections are introduced. The outage fixture `--cluster` deliberately shuts down its own database at the end; its schema check must be performed before shutdown or covered by the other integration fixtures. No production database is scanned or modified by this test.
 
-This contract records the approved storage constraint; the full M10 collection split is not implemented by this document.
+The optional mongo-split entity store and migration are documented in [M10 distributed authority](M10_DISTRIBUTED_AUTHORITY.md). The storage contract is mandatory for future scoped repositories.

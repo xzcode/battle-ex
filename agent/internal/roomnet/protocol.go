@@ -233,7 +233,7 @@ func (c *Client) validate(s *Snapshot, nonce string, now time.Time) error {
 		return fail
 	}
 	local, e := netip.ParseAddr(s.LocalIP)
-	if e != nil || !local.Is4() || !netip.MustParsePrefix("10.160.0.0/12").Contains(local) {
+	if e != nil || !local.Is4() || !netip.MustParsePrefix("10.128.0.0/10").Contains(local) {
 		return fail
 	}
 	prefix := netip.PrefixFrom(local, 24).Masked()

@@ -24,12 +24,14 @@ func drainRequested(file string) bool {
 	// On inaccessible control file, fail safe rather than advertise readiness.
 	return e == nil || !errors.Is(e, os.ErrNotExist)
 }
-func runHeartbeat(ctx context.Context, client *http.Client, origin, secret, node, drainFile string, rs *relay.Server) error {
+func newInstanceID() (string, error) {
 	var instance [16]byte
 	if _, e := rand.Read(instance[:]); e != nil {
-		return e
+		return "", e
 	}
-	id := hex.EncodeToString(instance[:])
+	return hex.EncodeToString(instance[:]), nil
+}
+func runHeartbeat(ctx context.Context, client *http.Client, origin, secret, node, drainFile, id string, rs *relay.Server) error {
 	send := func() {
 		body, e := json.Marshal(struct {
 			Node     string             `json:"node"`

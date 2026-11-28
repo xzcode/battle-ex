@@ -10,14 +10,14 @@ import reactor.core.publisher.Mono;
 @RestController
 @RequestMapping("/api/v1/competition")
 public final class CompetitionApi {
-    public record Enqueue(String gameId,Competition.Mode mode) {}
+    public record Enqueue(String gameId,Competition.Mode mode,String region) {}
     private final Platform platform;
     private final ReactiveWork work;
     public CompetitionApi(Platform platform,ReactiveWork work){this.platform=platform;this.work=work;}
 
     @PostMapping("/queue")
     Mono<Competition.View> enqueue(@RequestHeader(value="Authorization",required=false) String auth,@RequestBody Enqueue request){
-        return work.state(()->platform.enqueue(Api.bearer(auth),request.gameId(),request.mode()));
+        return work.state(()->platform.enqueue(Api.bearer(auth),request.gameId(),request.mode(),request.region()));
     }
     @DeleteMapping("/queue")
     Mono<Competition.View> cancel(@RequestHeader(value="Authorization",required=false) String auth){
@@ -26,12 +26,12 @@ public final class CompetitionApi {
     @GetMapping("/leaderboard/{game}")
     Mono<Competition.Leaderboard> leaderboard(@RequestHeader(value="Authorization",required=false) String auth,
             @PathVariable String game,@RequestParam(defaultValue="0") int offset,@RequestParam(defaultValue="50") int limit){
-        return work.state(()->platform.leaderboard(Api.bearer(auth),game,offset,limit));
+        return work.leaderboard(platform,Api.bearer(auth),game,offset,limit);
     }
     @GetMapping("/history")
     Mono<Competition.History> history(@RequestHeader(value="Authorization",required=false) String auth,
             @RequestParam(defaultValue="0") int offset,@RequestParam(defaultValue="50") int limit){
-        return work.state(()->platform.matchHistory(Api.bearer(auth),offset,limit));
+        return work.history(platform,Api.bearer(auth),offset,limit);
     }
     // No client-authenticated winner submission endpoint. The operator's
     // configured game-result issuer must sign this immutable match result.

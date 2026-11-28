@@ -13,7 +13,7 @@ public final class Operations {
     public record Dump(List<Grant> grants,List<Event> events) {}
     public record SessionRow(User user,long expiresAt,UUID roomId,boolean queued) {}
     public record RoomRow(UUID id,String name,String gameId,String visibility,String state,UUID host,int members,int capacity) {}
-    public record Overview(long signedIn,long rooms,long runningMatches,long queued,long teams,long tournaments,long pendingReports,long activeSuspensions,boolean persistent) {}
+    public record Overview(long signedIn,long rooms,long runningMatches,long queued,long teams,long tournaments,long pendingReports,long activeSuspensions,boolean persistent,com.battleex.platform.ClusterAuthority.StorageMetrics storage) {}
     private final Set<UUID> roots;
     private final Map<String,Grant> grants=new HashMap<>();
     private final List<Event> events=new ArrayList<>();

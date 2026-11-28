@@ -6,7 +6,7 @@ import catalog from '../game-catalog.json'
 
 const props=defineProps<{origin:string;token:string;language:Language;competition?:CompetitionView;activeRoom:boolean;userId:string;revision:number;refreshLobby:()=>Promise<void>;openRoom:()=>void}>()
 const l=(en:string,zh:string)=>props.language==='zh'?zh:en
-const games=ref('warcraft3'),mode=ref<MatchMode>('CASUAL'),tab=ref<'leaderboard'|'history'>('leaderboard')
+const games=ref('warcraft3'),mode=ref<MatchMode>('CASUAL'),region=ref('global'),tab=ref<'leaderboard'|'history'>('leaderboard')
 const board=ref<Leaderboard|null>(null),history=ref<MatchHistory|null>(null)
 const offset=ref(0),limit=50,loading=ref(false),working=ref(false),error=ref(''),now=ref(Math.floor(Date.now()/1000))
 let disposed=false,gen=0,timer:ReturnType<typeof setInterval>|undefined
@@ -49,7 +49,7 @@ async function action(cancel=false){
  if(working.value)return
  working.value=true;error.value=''
  try{
-  await request(props.origin,'/competition/queue',props.token,cancel?'DELETE':'POST',cancel?undefined:{gameId:games.value,mode:mode.value})
+  await request(props.origin,'/competition/queue',props.token,cancel?'DELETE':'POST',cancel?undefined:{gameId:games.value,mode:mode.value,region:region.value})
   await props.refreshLobby();await refresh()
  }catch(e){error.value=e instanceof Error?e.message:String(e)}
  finally{working.value=false}
@@ -66,10 +66,10 @@ onBeforeUnmount(()=>{disposed=true;++gen;if(timer)clearInterval(timer)})
    <div class="competition-queue-main">
     <div class="eyebrow">{{l('MATCH QUEUE','匹配队列')}}</div>
     <h2 v-if="ticket">{{l('Searching for an opponent','正在寻找对手')}}</h2><h2 v-else-if="match">{{l('Match assigned','已分配比赛')}}</h2><h2 v-else>{{l('Find your next match','寻找下一场比赛')}}</h2>
-    <template v-if="ticket"><p class="muted">{{name(ticket.gameId)}} · {{modeName(ticket.mode)}} · 1v1</p><div class="competition-clock">{{duration}}</div><button class="secondary" :disabled="working" @click="action(true)">{{l('Cancel matchmaking','取消匹配')}}</button></template>
+    <template v-if="ticket"><p class="muted">{{name(ticket.gameId)}} · {{modeName(ticket.mode)}} · {{ticket.region||'global'}} · 1v1</p><div class="competition-clock">{{duration}}</div><button class="secondary" :disabled="working" @click="action(true)">{{l('Cancel matchmaking','取消匹配')}}</button></template>
     <template v-else-if="match"><p class="muted">{{name(match.gameId)}} · {{modeName(match.mode)}} · {{opponents(match)}}</p><button class="primary" @click="openRoom">{{l('Open match room','打开比赛房间')}}</button></template>
     <template v-else>
-     <div class="competition-controls"><label>{{l('Game','游戏')}}<select v-model="games"><option v-for="g in catalog" :key="g.id" :value="g.id">{{language==='zh'?g.zh:g.en}}</option></select></label><label>{{l('Mode','模式')}}<select v-model="mode"><option value="CASUAL">{{l('Casual 1v1','休闲 1v1')}}</option><option value="RANKED" :disabled="!rankedEnabled||!!pending">{{l('Ranked 1v1','排位 1v1')}}</option></select></label></div>
+     <div class="competition-controls"><label>{{l('Game','游戏')}}<select v-model="games"><option v-for="g in catalog" :key="g.id" :value="g.id">{{language==='zh'?g.zh:g.en}}</option></select></label><label>{{l('Mode','模式')}}<select v-model="mode"><option value="CASUAL">{{l('Casual 1v1','休闲 1v1')}}</option><option value="RANKED" :disabled="!rankedEnabled||!!pending">{{l('Ranked 1v1','排位 1v1')}}</option></select></label><label>{{l('Region','地区')}}<select v-model="region" :aria-label="l('Region','地区')"><option value="global">{{l('Global','全球')}}</option><option value="asia">{{l('Asia','亚洲')}}</option><option value="europe">{{l('Europe','欧洲')}}</option><option value="americas">{{l('Americas','美洲')}}</option><option value="oceania">{{l('Oceania','大洋洲')}}</option></select></label></div>
      <p v-if="activeRoom" class="muted">{{l('Leave your current room before joining the queue.','请先离开当前房间，再进入匹配队列。')}}</p>
      <button class="primary" :disabled="activeRoom||working||!competition||(mode==='RANKED'&&(!rankedEnabled||!!pending))" @click="action()">{{l('Find match','开始匹配')}}</button>
     </template>

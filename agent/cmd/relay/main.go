@@ -84,6 +84,13 @@ func run() error {
 	if e != nil {
 		return e
 	}
+	instance := ""
+	if *register {
+		instance, e = newInstanceID()
+		if e != nil {
+			return e
+		}
+	}
 	authorize := func(lease relay.Lease) bool {
 		data, e := json.Marshal(lease)
 		if e != nil {
@@ -95,6 +102,9 @@ func run() error {
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Relay-Secret", shared)
+		if instance != "" {
+			req.Header.Set("X-Relay-Instance", instance)
+		}
 		res, e := hc.Do(req)
 		if e != nil {
 			return false
@@ -149,7 +159,7 @@ func run() error {
 	go func() { errs <- srv.ServeTLS(l, "", "") }()
 	if *register {
 		go func() {
-			if e := runHeartbeat(ctx, hc, authority, shared, *node, *drainFile, rs); e != nil {
+			if e := runHeartbeat(ctx, hc, authority, shared, *node, *drainFile, instance, rs); e != nil {
 				errs <- e
 			}
 		}()

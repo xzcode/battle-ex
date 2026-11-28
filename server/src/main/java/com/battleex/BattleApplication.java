@@ -31,7 +31,10 @@ public class BattleApplication {
             @Value("${battle.competition.result-issuer:}") String issuer,
             @Value("${battle.competition.ranked-games:}") String games,
             @Value("${battle.moderation.key-sha256:}") String moderatorDigest,
-            @Value("${battle.operations.root-users:}") String rootUsers) {
-        return new Platform(accounts,work,new ResultAuthority(issuer,games,mapper),new Moderation(moderatorDigest),new Operations(rootUsers));
+            @Value("${battle.operations.root-users:}") String rootUsers,
+            @Value("${battle.match.scheduling:inline}") String scheduling) {
+        if(!java.util.Set.of("inline","worker").contains(scheduling))throw new IllegalArgumentException("match scheduling must be inline or worker");
+        var platform=new Platform(accounts,work,new ResultAuthority(issuer,games,mapper),new Moderation(moderatorDigest),new Operations(rootUsers));
+        platform.configureWorkerMatching(scheduling.equals("worker"));return platform;
     }
 }

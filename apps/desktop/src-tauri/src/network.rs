@@ -288,7 +288,7 @@ fn cs_target(
     let a = ip.octets();
     let b = local.octets();
     if a[0] != 10
-        || !(160..=175).contains(&a[1])
+        || !(128..=191).contains(&a[1])
         || a[..3] != b[..3]
         || a[3] == 0
         || a[3] == 255

@@ -4,7 +4,7 @@ import {request} from './api'
 import type {Language} from './i18n'
 const props=defineProps<{origin:string;token:string;language:Language}>()
 type Stats={connections:number;ingress_bytes:number;egress_bytes:number;dropped_packets:number}
-type Node={id:string;region:string;state:string;seenAt:number;stats:Stats|null;maxConnections:number;bytesPerSecond:number}
+type Node={id:string;region:string;state:string;seenAt:number;stats:Stats|null;maxConnections:number;bytesPerSecond:number;reservedConnections?:number}
 type Minute={minute:number;peakConnections:number;ingressBytes:number;egressBytes:number;droppedPackets:number;samples:number;discontinuities:number}
 type History={node:string;retentionMinutes:number;minutes:Minute[];persistent?:boolean}
 const nodes=ref<Node[]>([]),selected=ref(''),history=ref<History|null>(null),loading=ref(false),error=ref(''),updated=ref(0)
@@ -53,8 +53,8 @@ onBeforeUnmount(()=>{disposed=true;++requestGeneration;if(timer)clearInterval(ti
   <div v-if="error" class="error" role="alert">{{error}}</div>
   <div class="relay-summary"><div><span>{{l('Configured nodes','已配置节点')}}</span><strong>{{nodes.length}}</strong></div><div><span>{{l('Online nodes','在线节点')}}</span><strong>{{online}}</strong></div><div><span>{{l('Reported connections','上报连接数')}}</span><strong>{{active}}</strong></div></div>
   <div class="relay-monitor-panel"><div class="panel-title">{{l('Nodes','节点列表')}} <small class="muted">{{updated?new Date(updated).toLocaleTimeString():'—'}}</small></div>
-   <div class="relay-scroll"><table><thead><tr><th>{{l('Node','节点')}}</th><th>{{l('Region','区域')}}</th><th>{{l('Status','状态')}}</th><th>{{l('Connections','连接数')}}</th><th>{{l('Ingress','接收')}}</th><th>{{l('Egress','发送')}}</th><th>{{l('Dropped','丢弃包')}}</th></tr></thead><tbody>
-    <tr v-for="n in nodes" :key="n.id" :class="{active:n.id===selected}" @click="select(n.id)"><td><button class="link" @click.stop="select(n.id)">{{n.id}}</button></td><td>{{n.region}}</td><td><span class="state" :class="n.state==='online'?'waiting':'idle'">{{state(n.state)}}</span></td><td>{{n.stats?.connections??'—'}} / {{n.maxConnections}}</td><td>{{bytes(n.stats?.ingress_bytes)}}</td><td>{{bytes(n.stats?.egress_bytes)}}</td><td>{{n.stats?.dropped_packets??'—'}}</td></tr>
+   <div class="relay-scroll"><table><thead><tr><th>{{l('Node','节点')}}</th><th>{{l('Region','区域')}}</th><th>{{l('Status','状态')}}</th><th>{{l('Connections','连接数')}}</th><th>{{l('Reserved','预留连接')}}</th><th>{{l('Ingress','接收')}}</th><th>{{l('Egress','发送')}}</th><th>{{l('Dropped','丢弃包')}}</th></tr></thead><tbody>
+    <tr v-for="n in nodes" :key="n.id" :class="{active:n.id===selected}" @click="select(n.id)"><td><button class="link" @click.stop="select(n.id)">{{n.id}}</button></td><td>{{n.region}}</td><td><span class="state" :class="n.state==='online'?'waiting':'idle'">{{state(n.state)}}</span></td><td>{{n.stats?.connections??'—'}} / {{n.maxConnections}}</td><td>{{n.reservedConnections??'—'}}</td><td>{{bytes(n.stats?.ingress_bytes)}}</td><td>{{bytes(n.stats?.egress_bytes)}}</td><td>{{n.stats?.dropped_packets??'—'}}</td></tr>
    </tbody></table></div>
    <p v-if="!nodes.length&&!loading" class="muted relay-empty">{{l('No relay nodes configured.','暂无已配置的中继节点。')}}</p>
   </div>

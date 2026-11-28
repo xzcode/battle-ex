@@ -1,0 +1,24 @@
+[Unit]
+Description=Battle EX authority instance %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=battle-ex
+Group=battle-ex
+WorkingDirectory=/opt/battle-ex
+EnvironmentFile=/etc/battle-ex/%i.env
+ExecStart=/usr/bin/java -jar /opt/battle-ex/battle-ex-server.jar
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/battle-ex
+UMask=0077
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -48,6 +48,7 @@ public final class Platform {
     private final Duration lifetime;
     private final String dummyHash;
     private long revision;
+    private boolean workerMatching;
 
     public Platform(AccountStore accounts, ReactiveWork work) {
         this(accounts, work, Clock.systemUTC(), Duration.ofHours(12),ResultAuthority.disabled(),new Moderation(""),new Operations(""));
@@ -70,6 +71,11 @@ public final class Platform {
         if(operations.configured()&&!moderation.configured())throw new IllegalArgumentException("root operators require a configured moderator credential");
         dummyHash = passwords.encode(UUID.randomUUID().toString());
     }
+
+    public List<String> rankedGames(){return competition.authority().games();}
+    public boolean moderationConfigured(){return moderation.configured();}
+    public boolean operationsConfigured(){return operations.configured();}
+    public synchronized void configureWorkerMatching(boolean value){workerMatching=value;}
 
     public record StateDump(long revision,List<Session> sessions,List<RoomDirectory.StoredRoom> rooms,Competition.Dump competition,MatchArchive.Dump archive,Moderation.Dump moderation,Teams.Dump teams,Tournaments.Dump tournaments,Operations.Dump operations) {}
     public synchronized StateDump exportState(){
@@ -240,7 +246,7 @@ public final class Platform {
         Instant now = clock.instant();
         for (Session s : new ArrayList<>(sessions.values())) if (!s.expiresAt().isAfter(now)||moderation.activeSuspension(s.user().id(),now.getEpochSecond())!=null) remove(s);
         if(competition.expire(now.getEpochSecond()))revision++;
-        matchWaiting(now.getEpochSecond());
+        if(!workerMatching)matchWaiting(now.getEpochSecond(),Set.of());
     }
     private Session require(String token) {
         sweep();
@@ -266,9 +272,11 @@ public final class Platform {
         competition.end(roomId,true,clock.instant().getEpochSecond());
         rooms.closeManaged(roomId);
     }
-    private void matchWaiting(long now){
+    private void matchWaiting(long now,Set<String> partitions){
         Competition.Pair pair;
-        while((pair=competition.nextPair(now))!=null){
+        // A bounded batch is backpressure per tick, not a player or queue quota.
+        int batch=0;
+        while(batch++<32&&(pair=competition.nextPair(now,partitions))!=null){
             var a=pair.first();var b=pair.second();
             var room=rooms.create(a.user().id(),a.mode()==Competition.Mode.RANKED?"Ranked 1v1":"Casual 1v1",a.gameId(),2,RoomDirectory.Visibility.PRIVATE);
             rooms.join(b.user().id(),room.id(),rooms.invitation(a.user().id(),room.id()));
@@ -276,14 +284,19 @@ public final class Platform {
             revision++;
         }
     }
-    public String competitionFingerprint(){return competition.authority().configurationFingerprint()+moderation.fingerprint()+operations.fingerprint();}
-    public synchronized Competition.View enqueue(String token,String gameId,Competition.Mode mode){
+    public String competitionFingerprint(){return competition.authority().configurationFingerprint()+moderation.fingerprint()+operations.fingerprint()+(workerMatching?":worker-matching-v1":"");}
+    public synchronized Competition.View enqueue(String token,String gameId,Competition.Mode mode){return enqueue(token,gameId,mode,"global");}
+    public synchronized Competition.View enqueue(String token,String gameId,Competition.Mode mode,String region){
         var user=require(token).user();
         if(rooms.activeRoom(user.id())!=null)throw new IllegalStateException("leave your active room before matchmaking");
         long now=clock.instant().getEpochSecond();
-        competition.enqueue(user,gameId,mode,now);tournaments.clearCheckIns(user.id());
-        revision++;matchWaiting(now);
+        competition.enqueue(user,gameId,mode,now,region);tournaments.clearCheckIns(user.id());
+        revision++;if(!workerMatching)matchWaiting(now,Set.of());
         return competition.view(user.id());
+    }
+    public synchronized void workerTick(Set<String> partitions){
+        sweep();
+        if(workerMatching)matchWaiting(now(),partitions);
     }
     public synchronized Competition.View cancelQueue(String token){
         var user=require(token).user();
@@ -396,7 +409,7 @@ public final class Platform {
     public synchronized Operations.Overview overview(String token,String key){
         var actor=operator(token,key);operations.requireOverview(actor.id());
         return new Operations.Overview(byUser.size(),rooms.count(),competition.runningCount(),competition.queuedCount(),teams.count(),tournaments.count(),
-                moderation.pendingCount(),moderation.activeCount(now()),work.persistent());
+                moderation.pendingCount(),moderation.activeCount(now()),work.persistent(),work.storageMetrics());
     }
     public synchronized List<Operations.Grant> operatorRoles(String token,String key){return operations.grants(operator(token,key).id());}
     public Mono<Operations.Grant> grantOperator(String token,String key,String username,Operations.Role role,String reason){

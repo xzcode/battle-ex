@@ -82,4 +82,23 @@ final class RelayDirectoryTest {
         assertEquals(2,row.discontinuities());
         assertTrue(d.history("a",120+1440L*60).minutes().isEmpty());
     }
+    @Test void reservationsAndRelayGenerationFencing()throws Exception{
+        var d=directory();d.configureFence(true);
+        d.heartbeat(a,heartbeat("a",false,0),100);d.heartbeat(b,heartbeat("b",false,0),100);
+        assertEquals("b",d.select(null,0,List.of("one","two"),true,100,Map.of("a",256),2,0,true));
+        assertNull(d.select(null,0,List.of("one","two"),true,100,Map.of("a",256,"b",256),2,0,true));
+        assertEquals("a",d.select("a",100,List.of("one","two"),true,100,Map.of("a",254),2,2,true));
+        assertTrue(d.instanceAllowed("a",instance,101));
+        String other=UUID.randomUUID().toString().replace("-","");
+        long generation=d.generation("a");
+        var hb=new RelayDirectory.Heartbeat("a",other,false,new RelayDirectory.Stats(0,0,0,0));
+        assertNull(d.heartbeat(a,hb,102));assertFalse(d.instanceAllowed("a",other,102));
+        assertNotNull(d.heartbeat(a,hb,110));assertTrue(d.generation("a")>generation);
+        assertFalse(d.instanceAllowed("a",instance,111));assertTrue(d.instanceAllowed("a",other,111));
+        assertEquals("10.160.0.1",NetworkAuthority.ip(0,1));
+        assertEquals("10.175.255.254",NetworkAuthority.ip(4095,254));
+        assertEquals("10.176.0.1",NetworkAuthority.ip(4096,1));
+        assertEquals("10.128.0.1",NetworkAuthority.ip(8192,1));
+        assertEquals("10.159.255.254",NetworkAuthority.ip(16383,254));
+    }
 }

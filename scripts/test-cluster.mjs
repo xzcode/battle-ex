@@ -21,7 +21,7 @@ const secret=randomBytes(32).toString('hex')
 writeFileSync(issuerFile,Buffer.concat([seed,pub]).toString('hex')+'\n',{mode:0o600})
 writeFileSync(secretFile,secret+'\n',{mode:0o600})
 writeFileSync(directoryFile,JSON.stringify([{id:'relay-test',region:'test',relayURL:'wss://127.0.0.1:19444/relay/v1',stunURL:'stun:127.0.0.1:3478',secretFile,priority:0,maxConnections:256,bytesPerSecond:10000000}]),{mode:0o600})
-const env={...process.env,BATTLE_BIND:'127.0.0.1',BATTLE_PORT:'0',BATTLE_STATE_MODE:'mongo',
+const env={...process.env,BATTLE_BIND:'127.0.0.1',BATTLE_PORT:'0',BATTLE_STATE_MODE:process.env.BATTLE_TEST_STATE_MODE||'mongo',
  BATTLE_NETWORK_ISSUER_KEY_FILE:issuerFile,BATTLE_NETWORK_RELAY_DIRECTORY_FILE:directoryFile,
  BATTLE_NETWORK_RELAY_URL:'',BATTLE_NETWORK_RELAY_SECRET_FILE:'',BATTLE_NETWORK_ICE:'false'}
 const sleep=ms=>new Promise(r=>setTimeout(r,ms))
